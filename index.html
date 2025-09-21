@@ -29,14 +29,13 @@
 
     <!-- Your app code -->
     <script type="text/babel" data-type="module" src="./app.jsx"></script>
-    <script type="text/babel">
-        // Only runs if keys are set
+    <script>
         (function(){
           if (!window.SUPABASE_URL || !window.SUPABASE_ANON || !window.supabase) return;
-      
+        
           const client = window.supabase.createClient(window.SUPABASE_URL, window.SUPABASE_ANON);
-      
-          // Simple auth button in the top-right (no React needed)
+        
+          // Little auth bar
           const bar = document.createElement('div');
           bar.style.position='fixed'; bar.style.top='8px'; bar.style.right='8px'; bar.style.zIndex='1000';
           bar.innerHTML = `
@@ -44,7 +43,7 @@
             <button id="srs-signout" class="px-3 py-2 rounded-xl bg-gray-200" style="display:none">Sign out</button>
           `;
           document.body.appendChild(bar);
-      
+        
           async function refreshButtons() {
             const { data } = await client.auth.getUser();
             const signedIn = !!data.user;
@@ -52,20 +51,27 @@
             document.getElementById('srs-signout').style.display = signedIn ? '' : 'none';
             if (signedIn) { pullAll(); }
           }
-      
+        
+          // Click handlers
           document.getElementById('srs-signin').onclick = async () => {
-            // easiest: magic link (change email as desired)
             const email = prompt("Enter your email for a sign-in link:");
             if (!email) return;
-            const { error } = await client.auth.signInWithOtp({ email, options: { emailRedirectTo: location.href }});
-            if (error) alert(error.message); else alert("Check your email for the login link.");
+            const { error } = await client.auth.signInWithOtp({
+              email,
+              options: { emailRedirectTo: location.href }   // redirects back to your page
+            });
+            if (error) alert(error.message);
+            else alert("Check your email and click the sign-in link.");
           };
-          document.getElementById('srs-signout').onclick = async () => { await client.auth.signOut(); refreshButtons(); };
-      
+          document.getElementById('srs-signout').onclick = async () => {
+            await client.auth.signOut();
+            refreshButtons();
+          };
+        
           client.auth.onAuthStateChange(() => refreshButtons());
           refreshButtons();
-      
-          // Helpers to read/write your app's state
+        
+          // ---- Optional: the pull/push helpers for syncing ----
           function getState() {
             try { return JSON.parse(localStorage.getItem("scripture_srs_v1")) || { cards:[], settings:{} }; }
             catch { return { cards:[], settings:{} }; }
@@ -73,20 +79,18 @@
           function setCardsLocal(cards) {
             const st = getState(); st.cards = cards;
             localStorage.setItem("scripture_srs_v1", JSON.stringify(st));
-            // Force a soft reload so React state picks up changes (simplest)
-            location.reload();
+            location.reload(); // simplest way to refresh UI without wiring events
           }
           function setSettingsLocal(settings) {
             const st = getState(); st.settings = settings;
             localStorage.setItem("scripture_srs_v1", JSON.stringify(st));
           }
-      
-          // Pull from cloud and LWW-merge into local
+        
           async function pullAll() {
             const { data: user } = await client.auth.getUser();
             if (!user?.user) return;
             const uid = user.user.id;
-      
+        
             const { data: rows } = await client.from('cards').select('*').eq('user_id', uid);
             const pulledCards = (rows||[]).map(r => ({
               id: r.id, ref: r.ref, text: r.text, pack: r.pack,
@@ -94,7 +98,6 @@
               createdAt: new Date(r.created_at).getTime(), updatedAt: new Date(r.updated_at).getTime(),
               deletedAt: r.deleted_at ? new Date(r.deleted_at).getTime() : null,
             }));
-            // Merge with local
             const local = getState().cards || [];
             const map = new Map(local.map(c => [c.id, c]));
             for (const r of pulledCards) {
@@ -102,30 +105,26 @@
               if (!l || r.updatedAt > (l.updatedAt || 0)) map.set(r.id, r);
             }
             setCardsLocal(Array.from(map.values()).filter(c => !c.deletedAt));
-      
-            // Settings
+        
             const { data: s } = await client.from('settings').select('*').eq('user_id', uid).maybeSingle();
-            if (s) {
-              setSettingsLocal({
-                sessionTarget: s.session_target, mode: s.mode,
-                showFirstNWords: s.show_first_n_words, shuffle: s.shuffle,
-              });
-            }
+            if (s) setSettingsLocal({
+              sessionTarget: s.session_target, mode: s.mode,
+              showFirstNWords: s.show_first_n_words, shuffle: s.shuffle,
+            });
           }
-      
-          // Push local to cloud whenever you click this (manual/safe)
+        
           window.pushSRS = async function pushAll() {
             const { data: user } = await client.auth.getUser();
             if (!user?.user) { alert("Sign in first."); return; }
             const uid = user.user.id;
-      
+        
             const { cards, settings } = getState();
             if (cards?.length) {
               const rows = cards.map(c => ({
                 id: c.id || crypto.randomUUID(),
                 user_id: uid,
                 ref: c.ref, text: c.text, pack: c.pack,
-                content_hash: (c.contentHash || (c.ref && c.text ? (function(s){ let h=2166136261>>>0; for (let i=0;i<s.length;i++) { h^=s.charCodeAt(i); h=Math.imul(h,16777619);} return (h>>>0).toString(36);} )(`${c.ref}|${c.text}`) : "")),
+                content_hash: (c.contentHash || (function(s){let h=2166136261>>>0;for(let i=0;i<s.length;i++){h^=s.charCodeAt(i);h=Math.imul(h,16777619)}return (h>>>0).toString(36)})(`${c.ref}|${c.text}`)),
                 box: c.box||1, next_due: c.nextDue||0,
                 created_at: new Date(c.createdAt||Date.now()).toISOString(),
                 updated_at: new Date(c.updatedAt||Date.now()).toISOString(),
@@ -133,7 +132,6 @@
               }));
               await client.from('cards').upsert(rows, { onConflict: 'id' });
             }
-      
             await client.from('settings').upsert({
               user_id: uid,
               session_target: settings?.sessionTarget ?? 50,
@@ -142,18 +140,17 @@
               shuffle: settings?.shuffle ?? true,
               updated_at: new Date().toISOString(),
             });
-      
-            alert("Pushed local data to cloud. Open on your iPad/iPhone → sign in → it’ll pull.");
+            alert("Pushed local data to cloud. Open on another device, sign in, and it will pull.");
           };
-      
-          // Add a floating push button (optional)
+        
+          // Optional floating button to push manually
           const pushBtn = document.createElement('button');
           pushBtn.textContent = 'Push to Cloud';
           pushBtn.className = 'fixed bottom-4 right-4 px-4 py-2 rounded-xl bg-emerald-600 text-white shadow';
           pushBtn.onclick = () => window.pushSRS();
           document.body.appendChild(pushBtn);
         })();
-      </script>
+        </script>        
   </body>
 </html>
 <!-- bump -->
