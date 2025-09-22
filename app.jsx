@@ -4,8 +4,8 @@ const { useEffect, useMemo, useRef, useState } = React;
 // Card: {
 //   id, ref, text, pack,
 //   srs: {
-//     slow: { bucket, nextDue, updatedAt },
-//     fast: { bucket, nextDue, updatedAt }
+//     slow: { bucket, nextDue, updatedAt, ease, reps, lapses, intervalDays, leech },
+//     fast: { bucket, nextDue, updatedAt, ease, reps, lapses, intervalDays, leech }
 //   },
 //   order,                      // 1-based index within its pack
 //   createdAt, updatedAt
@@ -16,16 +16,16 @@ const LS_KEY = "scripture_srs_v1";
 const now = () => Date.now();
 const day = 24 * 60 * 60 * 1000;
 
-// --- New bucket model (Phase 0 groundwork) ---
+// --- Buckets are now purely for display; scheduling is SM-2 ---
 const BUCKETS = ["0D","1D","7D","1M","3M","6M"];
-const INTERVAL_MS = {
-  "0D": 0,
-  "1D": 1 * day,
-  "7D": 7 * day,
-  "1M": 30 * day,
-  "3M": 90 * day,
-  "6M": 180 * day,
-};
+function bucketFromDays(d) {
+  if (d <= 0) return "0D";
+  if (d <= 1) return "1D";
+  if (d <= 7) return "7D";
+  if (d <= 30) return "1M";
+  if (d <= 90) return "3M";
+  return "6M";
+}
 
 // For migration bookkeeping
 const SCHEMA_VERSION = 1; // bump in later phases when structure changes again
@@ -33,7 +33,16 @@ const SCHEMA_VERSION = 1; // bump in later phases when structure changes again
 // Both schedules start at 0D and are due now
 function makeInitialSrs() {
   const t = now();
-  const sub = { bucket: "0D", nextDue: 0, updatedAt: t };
+  const sub = {
+    bucket: "0D",
+    nextDue: 0,
+    updatedAt: t,
+    ease: 2.5,
+    reps: 0,
+    lapses: 0,
+    intervalDays: 0,
+    leech: false,
+  };
   return { slow: { ...sub }, fast: { ...sub } };
 }
 
@@ -101,6 +110,11 @@ function migrateCardSRS(card) {
       bucket: sub?.bucket || "0D",
       nextDue: Number.isFinite(sub?.nextDue) ? sub.nextDue : 0,
       updatedAt: sub?.updatedAt || (card.updatedAt || now()),
+      ease: Number.isFinite(sub?.ease) ? sub.ease : 2.5,
+      reps: Number.isFinite(sub?.reps) ? sub.reps : 0,
+      lapses: Number.isFinite(sub?.lapses) ? sub.lapses : 0,
+      intervalDays: Number.isFinite(sub?.intervalDays) ? sub.intervalDays : 0,
+      leech: !!sub?.leech,
     });
     return {
       ...card,
@@ -160,33 +174,95 @@ function upgradeSettings(settings) {
   return s;
 }
 
-// --- Phase 1 helpers: grading + legacy mirroring ---
+// --- SM-2 helpers: jitter, leech handling (classic SM-2 ease formula) ---
 
-function gradeToBucket(label) {
+// Compute next state for one schedule (slow/fast) using classic SM-2
+// EF' = EF + 0.1 - (5 - q) * (0.08 + (5 - q) * 0.02), clamped to >= 1.3
+// q is the SuperMemo quality 0..5 (you use 0,3,4,5 via A/H/G/E).
+function sm2Update(sub, quality, opts) {
+  const nowTs = now();
+  const o = {
+    jitterPct: 0.15,
+    leechThreshold: 2,
+    ...opts,
+  };
+
+  let { ease, reps, lapses, intervalDays } = sub;
+  ease = Number.isFinite(ease) ? ease : 2.5;
+  reps = Number.isFinite(reps) ? reps : 0;
+  lapses = Number.isFinite(lapses) ? lapses : 0;
+  intervalDays = Number.isFinite(intervalDays) ? intervalDays : 0;
+
+  // Use true SM-2 quality scale 0..5
+  const q = Math.max(0, Math.min(5, quality));
+
+  // Update EF (ease factor) per the original formula
+  const dq = 5 - q;
+  let newEase = ease + 0.1 - dq * (0.08 + dq * 0.02);
+  newEase = Math.max(1.3, newEase);
+
+  let newInterval;
+  if (q < 3) {
+    // fail: reset repetitions, increment lapses, schedule 1 day
+    lapses += 1;
+    reps = 0;
+    newInterval = 1;
+  } else {
+    // pass: first=1d, second=6d, else multiply by EF
+    if (reps === 0) newInterval = 1;
+    else if (reps === 1) newInterval = 6;
+    else newInterval = Math.round(intervalDays * newEase);
+    reps += 1;
+  }
+
+  // Jitter: +/- jitterPct (default 15%)
+  const jitter = 1 + (Math.random() * 2 * o.jitterPct - o.jitterPct);
+  newInterval = Math.max(1, Math.round(newInterval * jitter));
+
+  // Leech handling
+  let leech = sub.leech || false;
+  if (lapses >= o.leechThreshold) {
+    leech = true;
+    // On becoming leech: shorten interval a bit to encourage overlearning
+    newInterval = Math.min(newInterval, 3);
+  }
+
+  const nextDue = nowTs + newInterval * day;
+  const bucket = bucketFromDays(newInterval);
   return {
-    "Again": "0D",
-    "1D": "1D",
-    "7D": "7D",
-    "1M": "1M",
-    "3M": "3M",
-    "6M": "6M",
-  }[label];
+    bucket,
+    nextDue,
+    updatedAt: nowTs,
+    ease: newEase,
+    reps,
+    lapses,
+    intervalDays: newInterval,
+    leech,
+  };
 }
 
-// Apply the chosen grade to the card, updating the correct schedule:
-//   - mode === 'recognition' ⇒ FAST schedule
-//   - mode === 'full' or 'review' ⇒ SLOW schedule
-function applyGrade(card, label, mode) {
-  const key = (mode === "recognition") ? "fast" : "slow";
-  const bucket = gradeToBucket(label);
-  const next = now() + (INTERVAL_MS[bucket] ?? 0);
+// Preview helper (no save): compute the next interval (days) deterministically (no jitter)
+function previewNextIntervalDays(sub, quality, opts) {
+  const next = sm2Update(sub, quality, { ...(opts || {}), jitterPct: 0 }); // stable preview
+  return next.intervalDays;
+}
 
+// Human-friendly interval text like "≈ 3d", "≈ 2.1m"
+function fmtIntervalDays(d) {
+  if (!Number.isFinite(d) || d <= 0) return "now";
+  if (d < 14) return `${d}d`;
+  if (d < 60) return `${Math.round(d / 7)}w`;
+  const m = Math.round((d / 30) * 10) / 10;
+  return `${m}m`;
+}
+
+// Apply chosen grade to the correct schedule (fast for recognition; slow otherwise)
+function applyGrade(card, quality, mode, opts) {
+  const key = (mode === "recognition") ? "fast" : "slow";
+  const updatedSub = sm2Update(card.srs[key], quality, opts);
   return {
     ...card,
-    srs: {
-      ...card.srs,
-      [key]: { bucket, nextDue: next, updatedAt: now() },
-    },
+    srs: { ...card.srs, [key]: updatedSub },
     updatedAt: now(),
   };
 }
@@ -221,7 +297,20 @@ function previewText(text, words = 6) {
   return parts.slice(0, words).join(" ") + (parts.length > words ? " …" : "");
 }
 
-function defaultSettings() { return { sessionTarget: 50, mode: "recognition", showFirstNWords: 6, shuffle: true }; }
+function todayKey() { return new Date().toISOString().slice(0,10); } // YYYY-MM-DD
+
+function defaultSettings() {
+  return {
+    sessionTarget: 50,
+    mode: "recognition",
+    showFirstNWords: 6,
+    shuffle: true,
+    dailyCapSlow: 60,   // max slow reviews per day
+    dailyCapFast: 200,  // max fast reviews per day
+    jitterPct: 0.15,
+    leechThreshold: 8,
+  };
+}
 
 // ----- Components -----
 function App() {
@@ -242,6 +331,13 @@ function App() {
   // Independent pack filter for View Verses
   const [versesPack, setVersesPack] = useState("ALL");
 
+  // Daily counters for caps
+  const [daily, setDaily] = useState({ key: todayKey(), slow: 0, fast: 0 });
+  const dailyRemaining = (mode) =>
+    (mode === "recognition"
+      ? settings.dailyCapFast - daily.fast
+      : settings.dailyCapSlow - daily.slow);
+
   const [packManagerOpen, setPackManagerOpen] = useState(false);
   const fileInputRef = useRef(null);
 
@@ -252,15 +348,31 @@ function App() {
     const migratedCards = migrateAllCards(loadedCards);
     const upgradedSettings = upgradeSettings(s.settings);
     const loadedHistory = Array.isArray(s.history) ? s.history : [];
+    const loadedDaily =
+      s.daily && s.daily.key === todayKey() ? s.daily : { key: todayKey(), slow: 0, fast: 0 };
+
 
     setCards(migratedCards);
     setSettings(upgradedSettings);
     setHistory(loadedHistory);
+    setDaily(loadedDaily);
   }, []);
 
   useEffect(() => {
-    saveState({ cards, settings, history });
-  }, [cards, settings, history]);
+    function onKey(e) {
+      const k = e.key.toLowerCase();
+      if (k === 'a') handleGrade(0);    // Again
+      if (k === 'h') handleGrade(3);    // Hard
+      if (k === 'g') handleGrade(4);    // Good
+      if (k === 'e') handleGrade(5);    // Easy
+    }
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [currentCard, settings.mode]);
+
+  useEffect(() => {
+    saveState({ cards, settings, history, daily });
+  }, [cards, settings, history, daily]);
 
   const packs = useMemo(() => ["ALL", ...Array.from(new Set(cards.map(c => c.pack))).sort()], [cards]);
 
@@ -273,8 +385,10 @@ function App() {
     });
     if (filterPack !== "ALL") list = list.filter(c => c.pack === filterPack);
     if (settings.shuffle) list = shuffle([...list]);
-    return list;
-  }, [cards, filterPack, settings.shuffle, settings.mode]);
+    // Enforce daily cap by slicing the due list to remaining allowance
+    const remain = Math.max(0, dailyRemaining(settings.mode));
+    return list.slice(0, remain);
+  }, [cards, filterPack, settings.shuffle, settings.mode, daily]);
 
   // If manual queue is active, pull from it; else, use dueCards
   const currentCard = useMemo(() => {
@@ -285,20 +399,53 @@ function App() {
     return dueCards[0];
   }, [sessionQueue, cards, dueCards]);
 
+  // Stable preview of next intervals for each quality (no jitter)
+  const previews = React.useMemo(() => {
+    if (!currentCard) return null;
+    const key = (settings.mode === "recognition") ? "fast" : "slow";
+    const sub = currentCard?.srs?.[key];
+    if (!sub) return null;
+    const baseOpts = { jitterPct: 0, leechThreshold: settings.leechThreshold ?? 8 };
+    return {
+      0: previewNextIntervalDays(sub, 0, baseOpts),
+      3: previewNextIntervalDays(sub, 3, baseOpts),
+      4: previewNextIntervalDays(sub, 4, baseOpts),
+      5: previewNextIntervalDays(sub, 5, baseOpts),
+    };
+  }, [currentCard, settings.mode, settings.leechThreshold]);
+
   function shuffle(arr) { for (let i = arr.length - 1; i > 0; i--) { const j = Math.floor(Math.random() * (i + 1)); [arr[i], arr[j]] = [arr[j], arr[i]]; } return arr; }
   function startSession() { setSessionStart(now()); setCompleted(0); setRevealed(false); }
-  function handleGrade(label) {
+  function handleGrade(quality) {
     if (!currentCard) return;
 
     // Before the update, capture from-bucket for the correct schedule
     const scheduleKey = (settings.mode === "recognition") ? "fast" : "slow";
     const fromBucket = currentCard?.srs?.[scheduleKey]?.bucket || "0D";
 
-    const updated = applyGrade(currentCard, label, settings.mode);
+    // Reset daily counters if day has rolled
+    setDaily(prev => (prev.key === todayKey() ? prev : { key: todayKey(), slow: 0, fast: 0 }));
+
+    // Apply SM-2 with our configured jitter/leech options
+    const updated = applyGrade(currentCard, quality, settings.mode, {
+      jitterPct: settings.jitterPct ?? 0.15,
+      leechThreshold: settings.leechThreshold ?? 8,
+    });
 
     setCards(prev => prev.map(c => (c.id === currentCard.id ? updated : c)));
     setRevealed(false);
     setCompleted(x => x + 1);
+
+    // Increment daily counter for the schedule used
+    setDaily(prev => {
+      const key = todayKey();
+      const base = prev.key === key ? prev : { key, slow: 0, fast: 0 };
+      if (scheduleKey === "fast") {
+        return { ...base, fast: base.fast + 1 };
+      } else {
+        return { ...base, slow: base.slow + 1 };
+      }
+    });
 
     // Append to history
     const toBucket = updated.srs?.[scheduleKey]?.bucket || fromBucket;
@@ -388,6 +535,12 @@ function App() {
             <div className="text-sm text-gray-600">Due: {dueCards.length} | Done: {completed} | {sessionElapsedMin}m</div>
           </div>
         </header>
+        {/* Daily cap status bar */}
+        <div className="text-xs text-gray-500">
+          Daily {settings.mode === "recognition" ? "FAST" : "SLOW"} cap: {settings.mode === "recognition" ? settings.dailyCapFast : settings.dailyCapSlow}
+          {" "}· used: {settings.mode === "recognition" ? daily.fast : daily.slow}
+          {" "}· left: {Math.max(0, dailyRemaining(settings.mode))}
+        </div>
 
         {/* Import / Export */}
         <section className="grid gap-3 sm:grid-cols-2">
@@ -510,13 +663,47 @@ function App() {
                 </div>
               )}
 
-              <div className="grid grid-cols-3 gap-2">
-                <button className="px-4 py-3 rounded-xl bg-rose-600 text-white"    onClick={() => handleGrade("Again")}>Again</button>
-                <button className="px-4 py-3 rounded-xl bg-gray-800 text-white"     onClick={() => handleGrade("1D")}>1D</button>
-                <button className="px-4 py-3 rounded-xl bg-gray-700 text-white"     onClick={() => handleGrade("7D")}>7D</button>
-                <button className="px-4 py-3 rounded-xl bg-indigo-600 text-white"   onClick={() => handleGrade("1M")}>1M</button>
-                <button className="px-4 py-3 rounded-xl bg-violet-600 text-white"   onClick={() => handleGrade("3M")}>3M</button>
-                <button className="px-4 py-3 rounded-xl bg-emerald-600 text-white"  onClick={() => handleGrade("6M")}>6M</button>
+              <div className="grid grid-cols-4 gap-2">
+                <button
+                  className="px-3 py-2 rounded-xl bg-rose-600 text-white"
+                  onClick={() => handleGrade(0)}
+                  title="Shortcut: A"
+                >
+                  <div className="font-semibold">Again</div>
+                  <div className="text-[11px] opacity-90">
+                    ≈ {previews ? fmtIntervalDays(previews[0]) : "—"}
+                  </div>
+                </button>
+                <button
+                  className="px-3 py-2 rounded-xl bg-amber-500 text-white"
+                  onClick={() => handleGrade(3)}
+                  title="Shortcut: H"
+                >
+                  <div className="font-semibold">Hard</div>
+                  <div className="text-[11px] opacity-90">
+                    ≈ {previews ? fmtIntervalDays(previews[3]) : "—"}
+                  </div>
+                </button>
+                <button
+                  className="px-3 py-2 rounded-xl bg-indigo-600 text-white"
+                  onClick={() => handleGrade(4)}
+                  title="Shortcut: G"
+                >
+                  <div className="font-semibold">Good</div>
+                  <div className="text-[11px] opacity-90">
+                    ≈ {previews ? fmtIntervalDays(previews[4]) : "—"}
+                  </div>
+                </button>
+                <button
+                  className="px-3 py-2 rounded-xl bg-emerald-600 text-white"
+                  onClick={() => handleGrade(5)}
+                  title="Shortcut: E"
+                >
+                  <div className="font-semibold">Easy</div>
+                  <div className="text-[11px] opacity-90">
+                    ≈ {previews ? fmtIntervalDays(previews[5]) : "—"}
+                  </div>
+                </button>
               </div>
 
               <EditableArea card={currentCard} onSave={editCurrentCard} />
