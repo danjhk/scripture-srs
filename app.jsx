@@ -236,6 +236,22 @@ function getActiveBucket(card, mode) {
   return card?.srs?.[key]?.bucket ?? mapBoxToBucketLegacy(card.box ?? 1);
 }
 
+// --- Phase 3 helpers: date deltas, preview text ---
+
+function daysSince(ts) {
+  if (!ts) return null;
+  return Math.floor((now() - ts) / day);
+}
+function daysTill(ts) {
+  if (!ts) return null;
+  const d = Math.ceil((ts - now()) / day);
+  return Math.max(0, d);
+}
+function previewText(text, words = 6) {
+  const parts = String(text || "").split(/\s+/);
+  return parts.slice(0, words).join(" ") + (parts.length > words ? " …" : "");
+}
+
 function defaultSettings() { return { sessionTarget: 50, mode: "recognition", showFirstNWords: 6, shuffle: true }; }
 function nextDueFromBox(box) { return now() + BOX_INTERVALS[Math.max(1, Math.min(5, box))]; }
 function clampBox(b) { return Math.max(1, Math.min(5, b)); }
@@ -244,10 +260,18 @@ function clampBox(b) { return Math.max(1, Math.min(5, b)); }
 function App() {
   const [cards, setCards] = useState([]);
   const [settings, setSettings] = useState(defaultSettings());
+  // New: local review history (Phase 3). We'll persist this in localStorage.
+  const [history, setHistory] = useState([]);
   const [revealed, setRevealed] = useState(false);
   const [sessionStart, setSessionStart] = useState(0);
   const [completed, setCompleted] = useState(0);
   const [filterPack, setFilterPack] = useState("ALL");
+  // Manual Review Queue (Phase 3): when non-empty, overrides normal due flow
+  const [sessionQueue, setSessionQueue] = useState([]); // array of card ids
+
+  // View Verses schedule toggle (slow vs fast) and pack filter (reuse filterPack if you like)
+  const [viewScheduleKey, setViewScheduleKey] = useState("slow"); // "slow" | "fast"
+
   const [packManagerOpen, setPackManagerOpen] = useState(false);
   const fileInputRef = useRef(null);
 
@@ -257,13 +281,16 @@ function App() {
     const loadedCards = Array.isArray(s.cards) ? s.cards : [];
     const migratedCards = migrateAllCards(loadedCards);
     const upgradedSettings = upgradeSettings(s.settings);
+    const loadedHistory = Array.isArray(s.history) ? s.history : [];
 
     setCards(migratedCards);
     setSettings(upgradedSettings);
-    // No explicit save here; your existing [cards, settings] effect will persist automatically.
+    setHistory(loadedHistory);
   }, []);
 
-  useEffect(() => { saveState({ cards, settings }); }, [cards, settings]);
+  useEffect(() => {
+    saveState({ cards, settings, history });
+  }, [cards, settings, history]);
 
   const packs = useMemo(() => ["ALL", ...Array.from(new Set(cards.map(c => c.pack))).sort()], [cards]);
 
@@ -279,16 +306,48 @@ function App() {
     return list;
   }, [cards, filterPack, settings.shuffle, settings.mode]);
 
-  const currentCard = dueCards[0];
+  // If manual queue is active, pull from it; else, use dueCards
+  const currentCard = useMemo(() => {
+    if (sessionQueue.length > 0) {
+      const id = sessionQueue[0];
+      return cards.find(c => c.id === id) || null;
+    }
+    return dueCards[0];
+  }, [sessionQueue, cards, dueCards]);
 
   function shuffle(arr) { for (let i = arr.length - 1; i > 0; i--) { const j = Math.floor(Math.random() * (i + 1)); [arr[i], arr[j]] = [arr[j], arr[i]]; } return arr; }
   function startSession() { setSessionStart(now()); setCompleted(0); setRevealed(false); }
   function handleGrade(label) {
     if (!currentCard) return;
+
+    // Before the update, capture from-bucket for the correct schedule
+    const scheduleKey = (settings.mode === "recognition") ? "fast" : "slow";
+    const fromBucket = currentCard?.srs?.[scheduleKey]?.bucket || mapBoxToBucketLegacy(currentCard.box || 1);
+
     const updated = applyGrade(currentCard, label, settings.mode);
+
     setCards(prev => prev.map(c => (c.id === currentCard.id ? updated : c)));
     setRevealed(false);
     setCompleted(x => x + 1);
+
+    // Append to history
+    const toBucket = updated.srs?.[scheduleKey]?.bucket || fromBucket;
+    setHistory(prev => [
+      ...prev,
+      {
+        id: crypto.randomUUID(),
+        cardId: updated.id,
+        pack: updated.pack,
+        ref: updated.ref,
+        mode: scheduleKey,              // 'fast' or 'slow'
+        fromBucket,
+        toBucket,
+        ts: now(),
+      }
+    ]);
+
+    // If manual queue is active, pop the current id
+    setSessionQueue(q => (q.length && q[0] === currentCard.id) ? q.slice(1) : q);
   }
 
   function handleReveal() { setRevealed(true); }
@@ -413,6 +472,20 @@ function App() {
 
         {/* Review Card */}
         <section className="rounded-2xl shadow p-6 bg-white">
+          {/* Phase 3 nicety: show when manual queue is active */}
+          {sessionQueue.length > 0 && (
+            <div className="rounded-xl border p-3 mb-4 bg-amber-50 text-amber-900 flex items-center justify-between">
+              <span>
+                Manual review queue active: {sessionQueue.length} verse{sessionQueue.length>1 ? "s" : ""} remaining.
+              </span>
+              <button
+                className="ml-4 text-xs px-2 py-1 rounded bg-amber-200 hover:bg-amber-300"
+                onClick={() => setSessionQueue([])}
+              >
+                Cancel
+              </button>
+            </div>
+          )}
           {!currentCard ? (
             <div className="text-center text-gray-500">No cards due. Great job!</div>
           ) : (
@@ -486,6 +559,28 @@ function App() {
           <h2 className="font-semibold mb-2">Stats</h2>
           <Stats cards={cards} />
         </section>
+
+        {/* View Verses */}
+        <VersesView
+          cards={cards}
+          currentPack={filterPack}
+          onChangePack={setFilterPack}
+          scheduleKey={viewScheduleKey}
+          onChangeScheduleKey={setViewScheduleKey}
+          onStartManual={(ids) => {
+            if (!ids?.length) return;
+            // Start a manual session queue: override current due flow
+            setSessionQueue(ids);
+            setRevealed(false);
+            setCompleted(0);
+            setSessionStart(now());
+            // Tip for UX: optionally scroll to the Review Card
+            // document.querySelector('#top-of-review')?.scrollIntoView({ behavior: 'smooth' });
+          }}
+        />
+
+        {/* View History */}
+        <HistoryView history={history} cards={cards} />
 
         {/* Bulk Pack Manager Modal */}
         {packManagerOpen && (
@@ -650,6 +745,165 @@ function Stats({ cards }) {
         </div>
       </div>
     </div>
+  );
+}
+
+function VersesView({ cards, currentPack, onChangePack, scheduleKey, onChangeScheduleKey, onStartManual }) {
+  // Filter by pack
+  const list = useMemo(() => {
+    const arr = (currentPack && currentPack !== "ALL")
+      ? cards.filter(c => c.pack === currentPack)
+      : cards.slice();
+    // Sort by pack order then ref for stability
+    return arr.sort((a, b) => {
+      if (a.pack !== b.pack) return a.pack.localeCompare(b.pack);
+      const ao = a.order ?? 1, bo = b.order ?? 1;
+      if (ao !== bo) return ao - bo;
+      return String(a.ref).localeCompare(String(b.ref));
+    });
+  }, [cards, currentPack]);
+
+  const [checked, setChecked] = useState(() => new Set());
+
+  const allVisibleIds = list.map(c => c.id);
+  const allChecked = checked.size > 0 && allVisibleIds.every(id => checked.has(id));
+
+  const toggleOne = (id) => setChecked(prev => {
+    const s = new Set(prev);
+    s.has(id) ? s.delete(id) : s.add(id);
+    return s;
+  });
+
+  const toggleAll = () => setChecked(prev => {
+    if (allChecked) return new Set();           // clear
+    return new Set(allVisibleIds);              // select all
+  });
+
+  return (
+    <section className="rounded-2xl shadow p-4 bg-white">
+      <div className="flex items-center justify-between flex-wrap gap-3">
+        <h2 className="font-semibold">View Verses</h2>
+        <div className="flex items-center gap-2">
+          <label className="text-sm">Schedule:</label>
+          <select
+            className="border rounded-xl p-2 text-sm"
+            value={scheduleKey}
+            onChange={e => onChangeScheduleKey(e.target.value)}
+          >
+            <option value="slow">Slow (Review/Full)</option>
+            <option value="fast">Fast (Recognition)</option>
+          </select>
+          <label className="text-sm ml-3">Pack:</label>
+          <select
+            className="border rounded-xl p-2 text-sm"
+            value={currentPack}
+            onChange={e => onChangePack(e.target.value)}
+          >
+            {/* caller passes the same `packs` list via currentPack/onChangePack (we reuse App's filterPack) */}
+            {/* We can’t render options here; they’re coming from parent select. */}
+          </select>
+        </div>
+      </div>
+
+      <div className="mt-3 flex gap-2">
+        <button
+          className="px-3 py-2 rounded-xl bg-gray-100"
+          onClick={toggleAll}
+        >
+          {allChecked ? "Clear All" : "Select All"}
+        </button>
+        <button
+          className={`px-3 py-2 rounded-xl ${checked.size ? 'bg-indigo-600 text-white' : 'bg-gray-200 text-gray-400'}`}
+          disabled={!checked.size}
+          onClick={() => onStartManual(
+            // Manual queue order: by pack order
+            list.filter(c => checked.has(c.id)).map(c => c.id)
+          )}
+        >
+          Review selected now
+        </button>
+      </div>
+
+      <div className="mt-3 grid gap-2">
+        {list.map(c => {
+          const sub = c?.srs?.[scheduleKey];
+          const since = daysSince(sub?.updatedAt);
+          const till = daysTill(sub?.nextDue);
+          const bucket = sub?.bucket || mapBoxToBucketLegacy(c.box || 1);
+          return (
+            <label key={c.id} className="flex items-start gap-3 p-3 border rounded-xl bg-gray-50">
+              <input
+                type="checkbox"
+                checked={checked.has(c.id)}
+                onChange={() => toggleOne(c.id)}
+              />
+              <div className="min-w-0">
+                <div className="font-semibold text-gray-800 truncate" title={c.ref}>
+                  {c.ref}
+                </div>
+                <div className="text-xs text-gray-600 truncate">{previewText(c.text, 10)}</div>
+                <div className="text-[11px] text-gray-500 mt-1">
+                  {c.pack} · #{c.order ?? "?"} · {bucket} ·
+                  {" "}since: {since ?? "–"}d · till: {till ?? "–"}d
+                </div>
+              </div>
+            </label>
+          );
+        })}
+        {list.length === 0 && (
+          <div className="text-sm text-gray-500">No verses in this filter.</div>
+        )}
+      </div>
+    </section>
+  );
+}
+
+function HistoryView({ history, cards }) {
+  const thirtyDaysAgo = now() - 30 * day;
+
+  const rows = useMemo(() => {
+    // newest → oldest, last 30 days
+    const recent = history.filter(h => (h.ts || 0) >= thirtyDaysAgo)
+                          .sort((a,b) => b.ts - a.ts);
+    return recent.map(h => {
+      const card = cards.find(c => c.id === h.cardId);
+      const sub = card?.srs?.[h.mode]; // 'fast' or 'slow' as logged
+      const since = daysSince(sub?.updatedAt);
+      const till = daysTill(sub?.nextDue);
+      return { ...h, card, since, till, bucketNow: sub?.bucket || null };
+    });
+  }, [history, cards]);
+
+  return (
+    <section className="rounded-2xl shadow p-4 bg-white">
+      <div className="flex items-center justify-between">
+        <h2 className="font-semibold">View History (last 30 days)</h2>
+        <div className="text-sm text-gray-500">{rows.length} entries</div>
+      </div>
+
+      <div className="mt-3 grid gap-2">
+        {rows.map(r => (
+          <div key={r.id} className="p-3 border rounded-xl bg-gray-50">
+            <div className="text-sm font-semibold">
+              {r.card?.ref || "(deleted)"} <span className="text-xs text-gray-500">· {r.pack}</span>
+            </div>
+            <div className="text-xs text-gray-600">
+              {new Date(r.ts).toLocaleString()} · {r.mode === "fast" ? "Recognition" : "Review/Full"}
+            </div>
+            <div className="text-xs text-gray-700 mt-1">
+              {r.fromBucket} → {r.toBucket}
+              {r.bucketNow && r.bucketNow !== r.toBucket ? ` (now: ${r.bucketNow})` : ""}
+            </div>
+            <div className="text-[11px] text-gray-500">
+              since: {r.since ?? "–"}d · till: {r.till ?? "–"}d
+            </div>
+          </div>
+        ))}
+        {rows.length === 0 && (
+          <div className="text-sm text-gray-500">No reviews in the last 30 days.</div>
+        )}
+      </div>
+    </section>
   );
 }
 
