@@ -222,6 +222,20 @@ function applyGrade(card, label, mode) {
   };
 }
 
+// --- Phase 2 helpers: ordinal + active bucket label ---
+
+// 1st, 2nd, 3rd, 4th...
+function ordinal(n) {
+  const s = ["th","st","nd","rd"], v = n % 100;
+  return n + (s[(v - 20) % 10] || s[v] || s[0]);
+}
+
+// Derive the visible bucket for the current mode (fast for recognition, slow otherwise)
+function getActiveBucket(card, mode) {
+  const key = (mode === "recognition") ? "fast" : "slow";
+  return card?.srs?.[key]?.bucket ?? mapBoxToBucketLegacy(card.box ?? 1);
+}
+
 function defaultSettings() { return { sessionTarget: 50, mode: "recognition", showFirstNWords: 6, shuffle: true }; }
 function nextDueFromBox(box) { return now() + BOX_INTERVALS[Math.max(1, Math.min(5, box))]; }
 function clampBox(b) { return Math.max(1, Math.min(5, b)); }
@@ -373,6 +387,7 @@ function App() {
             <select className="mt-1 w-full border rounded-xl p-2" value={settings.mode} onChange={(e) => setSettings({ ...settings, mode: e.target.value })}>
               <option value="recognition">Recognition (fast)</option>
               <option value="full">Full (hide all)</option>
+              <option value="review">Review (narrow, revealed)</option>
             </select>
           </div>
           <div>
@@ -402,17 +417,27 @@ function App() {
             <div className="text-center text-gray-500">No cards due. Great job!</div>
           ) : (
             <div className="space-y-4">
-              <div className="text-xs text-gray-500">Pack: {currentCard.pack} · Box {currentCard.box}</div>
+              <div className="text-xs text-gray-500">
+                Pack: {currentCard.pack}
+                {" · "}
+                {currentCard?.order ? `${ordinal(currentCard.order)} Verse · ` : ""}
+                {getActiveBucket(currentCard, settings.mode)}
+              </div>
 
               <div className="text-lg font-semibold">
                 {settings.mode === "recognition" ? (
                   <CardFrontRecognition card={currentCard} words={settings.showFirstNWords} />
-                ) : (
+                ) : settings.mode === "full" ? (
                   <div>
                     <div className="text-gray-700 text-sm">{currentCard.ref}</div>
                     {!revealed && (
                       <div className="mt-2 text-xs text-gray-400">(Tap Reveal to see the verse text)</div>
                     )}
+                  </div>
+                ) : (
+                  // review mode: same header look as Full, but no reveal hint (always revealed below)
+                  <div>
+                    <div className="text-gray-700 text-sm">{currentCard.ref}</div>
                   </div>
                 )}
               </div>
@@ -421,9 +446,24 @@ function App() {
                 <button className="px-4 py-2 rounded-xl bg-gray-900 text-white" onClick={handleReveal}>Reveal</button>
               )}
 
-              {(settings.mode === "recognition" || revealed) && (
+              {/* Verse body */}
+              {settings.mode === "recognition" && (
                 <div className="rounded-xl border p-4 bg-gray-50">
                   <div className="text-sm whitespace-pre-wrap">{currentCard.text}</div>
+                </div>
+              )}
+
+              {settings.mode === "full" && revealed && (
+                <div className="rounded-xl border p-4 bg-gray-50">
+                  <div className="text-sm whitespace-pre-wrap">{currentCard.text}</div>
+                </div>
+              )}
+
+              {settings.mode === "review" && (
+                <div className="rounded-xl border p-4 bg-gray-50 flex justify-center">
+                  <div className="text-base whitespace-pre-wrap break-words font-mono w-[25ch]">
+                    {currentCard.text}
+                  </div>
                 </div>
               )}
 
