@@ -1176,28 +1176,35 @@ function VersesView({
     <section className="rounded-2xl shadow p-4 bg-white">
       <div className="flex items-center justify-between flex-wrap gap-3">
         <h2 className="font-semibold">View Verses</h2>
-        <div className="flex items-center gap-2">
-          <label className="text-sm">Schedule:</label>
-          <select
-            className="border rounded-xl p-2 text-sm"
-            value={scheduleKey}
-            onChange={(e) => onChangeScheduleKey(e.target.value)}
-          >
-            <option value="slow">Slow (Review/Full)</option>
-            <option value="fast">Fast (Recognition)</option>
-          </select>
-          <label className="text-sm ml-3">Pack:</label>
-          <select
-            className="border rounded-xl p-2 text-sm min-w-56"
-            value={currentPack}
-            onChange={(e) => onChangePack(e.target.value)}
-          >
-            {packs.map((p) => (
-              <option key={p} value={p}>
-                {p}
-              </option>
-            ))}
-          </select>
+        <div className="flex flex-col sm:flex-row sm:items-center gap-2 w-full">
+          <div className="flex items-center gap-2">
+            <label className="text-sm">Schedule:</label>
+            <select
+              className="border rounded-xl p-2 text-sm"
+              value={scheduleKey}
+              onChange={(e) => onChangeScheduleKey(e.target.value)}
+            >
+              <option value="slow">Slow (Review/Full)</option>
+              <option value="fast">Fast (Recognition)</option>
+            </select>
+          </div>
+
+          <div className="flex items-center gap-2 sm:ml-3 min-w-0 w-full">
+            <label className="text-sm">Pack:</label>
+            <div className="min-w-0 flex-1">
+              <select
+                className="border rounded-xl p-2 text-sm w-full sm:w-56"
+                value={currentPack}
+                onChange={(e) => onChangePack(e.target.value)}
+              >
+                {packs.map((p) => (
+                  <option key={p} value={p}>
+                    {p}
+                  </option>
+                ))}
+              </select>
+            </div>
+          </div>
         </div>
       </div>
 
