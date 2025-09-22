@@ -44,6 +44,10 @@
       const signinBtn  = document.getElementById('srs-signin');
       const signoutBtn = document.getElementById('srs-signout');
 
+      // Hide both buttons until we know the auth state
+      signinBtn.style.display = 'none';
+      signoutBtn.style.display = 'none';
+
       // Disable until Supabase is loaded
       signinBtn.disabled = true;
       signinBtn.textContent = 'Loading...';
