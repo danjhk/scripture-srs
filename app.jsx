@@ -3,8 +3,7 @@ const { useEffect, useMemo, useRef, useState } = React;
 // ----- Types -----
 // Card: {
 //   id, ref, text, pack,
-//   box, nextDue,               // legacy (kept for now)
-//   srs: {                      // new (Phase 0+)
+//   srs: {
 //     slow: { bucket, nextDue, updatedAt },
 //     fast: { bucket, nextDue, updatedAt }
 //   },
@@ -16,7 +15,6 @@ const { useEffect, useMemo, useRef, useState } = React;
 const LS_KEY = "scripture_srs_v1";
 const now = () => Date.now();
 const day = 24 * 60 * 60 * 1000;
-const BOX_INTERVALS = [0, 1 * day, 3 * day, 7 * day, 14 * day, 30 * day];
 
 // --- New bucket model (Phase 0 groundwork) ---
 const BUCKETS = ["0D","1D","7D","1M","3M","6M"];
@@ -31,6 +29,13 @@ const INTERVAL_MS = {
 
 // For migration bookkeeping
 const SCHEMA_VERSION = 1; // bump in later phases when structure changes again
+
+// Both schedules start at 0D and are due now
+function makeInitialSrs() {
+  const t = now();
+  const sub = { bucket: "0D", nextDue: 0, updatedAt: t };
+  return { slow: { ...sub }, fast: { ...sub } };
+}
 
 function hashString(s) {
   let h = 2166136261 >>> 0;
@@ -60,7 +65,16 @@ function parseLineToCard(line, fileName) {
     }
   }
   const id = hashString(`${ref}|${text}`);
-  return { id, ref, text, pack: fileName, box: 1, nextDue: 0, createdAt: now(), updatedAt: now() };
+  return {
+    id,
+    ref,
+    text,
+    pack: fileName,
+    srs: makeInitialSrs(),          // NEW
+    order: undefined,               // will be assigned after import
+    createdAt: now(),
+    updatedAt: now(),
+  };
 }
 
 function saveState(state) { localStorage.setItem(LS_KEY, JSON.stringify(state)); }
@@ -78,43 +92,25 @@ function loadState() {
 
 // --- Phase 0 helpers: migration & ordering ---
 
-// Map legacy numeric box (1..5) to new bucket labels conservatively
-// Old boxes: 1=1d, 2=3d, 3=7d, 4=14d, 5=30d
-function mapBoxToBucketLegacy(box) {
-  switch (Number(box)) {
-    case 1: return "1D";
-    case 2: return "1D"; // 3d → keep conservative (closer to 1D than 7D)
-    case 3: return "7D";
-    case 4: return "7D"; // 14d → closer to 7D than 1M
-    case 5: return "1M";
-    default: return "1D";
-  }
-}
 
 // Ensure srs.slow / srs.fast exist on a card
 function migrateCardSRS(card) {
-  const createdOrNow = card.createdAt || now();
-  const updatedOrCreated = card.updatedAt || createdOrNow;
-  const legacyBucket = mapBoxToBucketLegacy(card.box || 1);
-  const legacyNext = card.nextDue || 0;
-
-  let srs = card.srs;
-  if (!srs) {
-    const sub = { bucket: legacyBucket, nextDue: legacyNext, updatedAt: updatedOrCreated };
-    srs = { slow: { ...sub }, fast: { ...sub } };
-  } else {
-    // Fill any missing fields defensively
-    const ensureSub = (sub) => ({
-      bucket: sub?.bucket || legacyBucket,
-      nextDue: Number.isFinite(sub?.nextDue) ? sub.nextDue : legacyNext,
-      updatedAt: sub?.updatedAt || updatedOrCreated,
+  // If card already has srs, normalize fields; else create fresh at 0D
+  if (card?.srs?.slow || card?.srs?.fast) {
+    const normalize = (sub) => ({
+      bucket: sub?.bucket || "0D",
+      nextDue: Number.isFinite(sub?.nextDue) ? sub.nextDue : 0,
+      updatedAt: sub?.updatedAt || (card.updatedAt || now()),
     });
-    srs = {
-      slow: ensureSub(srs.slow),
-      fast: ensureSub(srs.fast),
+    return {
+      ...card,
+      srs: {
+        slow: normalize(card.srs.slow),
+        fast: normalize(card.srs.fast),
+      },
     };
   }
-  return { ...card, srs };
+  return { ...card, srs: makeInitialSrs() };
 }
 
 // Assign 1-based `order` per pack; preserve existing order if present, else use createdAt then id
@@ -177,47 +173,20 @@ function gradeToBucket(label) {
   }[label];
 }
 
-// We still mirror to legacy box (1..5) so existing Stats/PackManager stay accurate.
-// Legacy meaning in your current app: 1=~1d, 2=~3d, 3=~7d, 4=~14d, 5=~30d
-function bucketToLegacyBox(bucket) {
-  switch (bucket) {
-    case "0D": return 1; // closest we have
-    case "1D": return 1;
-    case "7D": return 3;
-    case "1M": return 5;
-    case "3M": return 5; // no 90d/180d legacy buckets; use 30d as coarse mirror
-    case "6M": return 5;
-    default: return 1;
-  }
-}
-
 // Apply the chosen grade to the card, updating the correct schedule:
 //   - mode === 'recognition' ⇒ FAST schedule
 //   - mode === 'full' or 'review' ⇒ SLOW schedule
-// Also mirror to legacy {box,nextDue} for compatibility with current UI pieces.
 function applyGrade(card, label, mode) {
   const key = (mode === "recognition") ? "fast" : "slow";
   const bucket = gradeToBucket(label);
   const next = now() + (INTERVAL_MS[bucket] ?? 0);
 
-  const updatedSrs = {
-    ...card.srs,
-    [key]: {
-      bucket,
-      nextDue: next,
-      updatedAt: now(),
-    },
-  };
-
-  // mirror to legacy fields so your Stats/PackManager keep reflecting changes
-  const legacyBox = bucketToLegacyBox(bucket);
-  const legacyNextDue = next;
-
   return {
     ...card,
-    srs: updatedSrs,
-    box: legacyBox,
-    nextDue: legacyNextDue,
+    srs: {
+      ...card.srs,
+      [key]: { bucket, nextDue: next, updatedAt: now() },
+    },
     updatedAt: now(),
   };
 }
@@ -233,7 +202,7 @@ function ordinal(n) {
 // Derive the visible bucket for the current mode (fast for recognition, slow otherwise)
 function getActiveBucket(card, mode) {
   const key = (mode === "recognition") ? "fast" : "slow";
-  return card?.srs?.[key]?.bucket ?? mapBoxToBucketLegacy(card.box ?? 1);
+  return card?.srs?.[key]?.bucket || "0D";
 }
 
 // --- Phase 3 helpers: date deltas, preview text ---
@@ -253,8 +222,6 @@ function previewText(text, words = 6) {
 }
 
 function defaultSettings() { return { sessionTarget: 50, mode: "recognition", showFirstNWords: 6, shuffle: true }; }
-function nextDueFromBox(box) { return now() + BOX_INTERVALS[Math.max(1, Math.min(5, box))]; }
-function clampBox(b) { return Math.max(1, Math.min(5, b)); }
 
 // ----- Components -----
 function App() {
@@ -271,6 +238,9 @@ function App() {
 
   // View Verses schedule toggle (slow vs fast) and pack filter (reuse filterPack if you like)
   const [viewScheduleKey, setViewScheduleKey] = useState("slow"); // "slow" | "fast"
+
+  // Independent pack filter for View Verses
+  const [versesPack, setVersesPack] = useState("ALL");
 
   const [packManagerOpen, setPackManagerOpen] = useState(false);
   const fileInputRef = useRef(null);
@@ -322,7 +292,7 @@ function App() {
 
     // Before the update, capture from-bucket for the correct schedule
     const scheduleKey = (settings.mode === "recognition") ? "fast" : "slow";
-    const fromBucket = currentCard?.srs?.[scheduleKey]?.bucket || mapBoxToBucketLegacy(currentCard.box || 1);
+    const fromBucket = currentCard?.srs?.[scheduleKey]?.bucket || "0D";
 
     const updated = applyGrade(currentCard, label, settings.mode);
 
@@ -563,19 +533,17 @@ function App() {
         {/* View Verses */}
         <VersesView
           cards={cards}
-          currentPack={filterPack}
-          onChangePack={setFilterPack}
+          packs={packs}                    // NEW: provide options
+          currentPack={versesPack}         // NEW: independent from study filter
+          onChangePack={setVersesPack}     // NEW
           scheduleKey={viewScheduleKey}
           onChangeScheduleKey={setViewScheduleKey}
           onStartManual={(ids) => {
             if (!ids?.length) return;
-            // Start a manual session queue: override current due flow
             setSessionQueue(ids);
             setRevealed(false);
             setCompleted(0);
             setSessionStart(now());
-            // Tip for UX: optionally scroll to the Review Card
-            // document.querySelector('#top-of-review')?.scrollIntoView({ behavior: 'smooth' });
           }}
         />
 
@@ -667,8 +635,12 @@ function PackManager({ cards, onClose, onDelete, onExport }) {
   const summary = useMemo(() => {
     const m = new Map();
     for (const c of cards) {
-      const v = m.get(c.pack) || { count: 0, boxes: [0,0,0,0,0,0] };
-      v.count++; v.boxes[c.box] = (v.boxes[c.box]||0)+1; m.set(c.pack, v);
+      const p = c.pack;
+      const b = c?.srs?.slow?.bucket || "0D";
+      const v = m.get(p) || { count: 0, buckets: Object.fromEntries(BUCKETS.map(k => [k, 0])) };
+      v.count++;
+      v.buckets[b] = (v.buckets[b] || 0) + 1;
+      m.set(p, v);
     }
     return Array.from(m.entries()).sort((a,b)=>a[0].localeCompare(b[0]));
   }, [cards]);
@@ -704,7 +676,7 @@ function PackManager({ cards, onClose, onDelete, onExport }) {
               <div className="min-w-0">
                 <div className="font-semibold text-gray-800 truncate" title={pack}>{pack}</div>
                 <div className="text-xs text-gray-600">Cards: {v.count}</div>
-                <div className="text-[11px] text-gray-500">Boxes: {v.boxes.slice(1).map((n,i)=>`#${i+1}:${n}`).join('  ')}</div>
+                <div className="text-[11px] text-gray-500">{BUCKETS.map(k => `${k}:${(v.buckets[k]||0)}`).join('  ')}</div>
               </div>
             </label>
           ))}
@@ -716,30 +688,60 @@ function PackManager({ cards, onClose, onDelete, onExport }) {
 
 function Stats({ cards }) {
   const total = cards.length;
+
   const byPack = useMemo(() => {
     const m = new Map();
     for (const c of cards) {
       const key = c.pack;
-      const v = m.get(key) || { count: 0, boxes: [0,0,0,0,0,0] };
-      v.count++; v.boxes[c.box] = (v.boxes[c.box] || 0) + 1; m.set(key, v);
+      const v = m.get(key) || {
+        count: 0,
+        slow: Object.fromEntries(BUCKETS.map(k => [k, 0])),
+        fast: Object.fromEntries(BUCKETS.map(k => [k, 0])),
+      };
+      v.count++;
+      v.slow[c?.srs?.slow?.bucket || "0D"]++;
+      v.fast[c?.srs?.fast?.bucket || "0D"]++;
+      m.set(key, v);
     }
     return Array.from(m.entries()).sort((a,b)=>a[0].localeCompare(b[0]));
   }, [cards]);
-  const byBox = useMemo(() => { const arr = [0,0,0,0,0,0]; for (const c of cards) arr[c.box]++; return arr; }, [cards]);
+
+  const totals = useMemo(() => {
+    const slow = Object.fromEntries(BUCKETS.map(k => [k, 0]));
+    const fast = Object.fromEntries(BUCKETS.map(k => [k, 0]));
+    for (const c of cards) {
+      slow[c?.srs?.slow?.bucket || "0D"]++;
+      fast[c?.srs?.fast?.bucket || "0D"]++;
+    }
+    return { slow, fast };
+  }, [cards]);
+
   return (
     <div className="text-sm space-y-3">
       <div>Total cards: <b>{total}</b></div>
-      <div className="flex gap-2 flex-wrap">{[1,2,3,4,5].map(b => (
-        <span key={b} className="px-3 py-1 rounded-full bg-gray-100">Box {b}: {byBox[b]}</span>
-      ))}</div>
+
+      <div className="flex flex-wrap gap-2">
+        <span className="px-2 py-1 rounded bg-gray-100 text-xs font-medium">Slow</span>
+        {BUCKETS.map(k => (
+          <span key={`slow-${k}`} className="px-3 py-1 rounded-full bg-gray-100"> {k}: {totals.slow[k]} </span>
+        ))}
+      </div>
+      <div className="flex flex-wrap gap-2">
+        <span className="px-2 py-1 rounded bg-gray-100 text-xs font-medium">Fast</span>
+        {BUCKETS.map(k => (
+          <span key={`fast-${k}`} className="px-3 py-1 rounded-full bg-gray-100"> {k}: {totals.fast[k]} </span>
+        ))}
+      </div>
+
       <div className="mt-2">
-        <div className="font-medium mb-1">By Pack</div>
+        <div className="font-medium mb-1">By Pack (slow / fast)</div>
         <div className="grid sm:grid-cols-2 gap-2">
           {byPack.map(([pack, v]) => (
             <div key={pack} className="rounded-xl border p-2 bg-gray-50">
               <div className="font-semibold text-gray-700 truncate" title={pack}>{pack}</div>
               <div className="text-xs text-gray-600">Cards: {v.count}</div>
-              <div className="text-xs text-gray-600">Boxes: {v.boxes.slice(1).map((n,i)=>`#${i+1}:${n}`).join("  ")}</div>
+              <div className="text-xs text-gray-600">Slow: {BUCKETS.map(k => `${k}:${v.slow[k]}`).join("  ")}</div>
+              <div className="text-xs text-gray-600">Fast: {BUCKETS.map(k => `${k}:${v.fast[k]}`).join("  ")}</div>
             </div>
           ))}
         </div>
@@ -748,7 +750,7 @@ function Stats({ cards }) {
   );
 }
 
-function VersesView({ cards, currentPack, onChangePack, scheduleKey, onChangeScheduleKey, onStartManual }) {
+function VersesView({ cards, packs, currentPack, onChangePack, scheduleKey, onChangeScheduleKey, onStartManual }) {
   // Filter by pack
   const list = useMemo(() => {
     const arr = (currentPack && currentPack !== "ALL")
@@ -795,13 +797,15 @@ function VersesView({ cards, currentPack, onChangePack, scheduleKey, onChangeSch
           </select>
           <label className="text-sm ml-3">Pack:</label>
           <select
-            className="border rounded-xl p-2 text-sm"
+            className="border rounded-xl p-2 text-sm min-w-56"  // wider dropdown
             value={currentPack}
             onChange={e => onChangePack(e.target.value)}
           >
-            {/* caller passes the same `packs` list via currentPack/onChangePack (we reuse App's filterPack) */}
-            {/* We can’t render options here; they’re coming from parent select. */}
+            {packs.map(p => (
+              <option key={p} value={p}>{p}</option>
+            ))}
           </select>
+
         </div>
       </div>
 
@@ -829,7 +833,7 @@ function VersesView({ cards, currentPack, onChangePack, scheduleKey, onChangeSch
           const sub = c?.srs?.[scheduleKey];
           const since = daysSince(sub?.updatedAt);
           const till = daysTill(sub?.nextDue);
-          const bucket = sub?.bucket || mapBoxToBucketLegacy(c.box || 1);
+          const bucket = sub?.bucket || "0D";
           return (
             <label key={c.id} className="flex items-start gap-3 p-3 border rounded-xl bg-gray-50">
               <input
