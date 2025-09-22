@@ -83,11 +83,6 @@
           let t; return (...args) => { clearTimeout(t); t = setTimeout(() => fn(...args), ms); };
         };
 
-        const isSignedIn = async () => {
-          const { data } = await client.auth.getUser();
-          return !!data.user;
-        };
-
         const cleanupHash = () => {
           if (location.hash && location.hash.includes('access_token')) {
             history.replaceState({}, '', location.pathname + location.search);
@@ -156,6 +151,12 @@
           const st = getState(); st.settings = settings;
           localStorage.setItem("scripture_srs_v1", JSON.stringify(st));
           window.dispatchEvent(new CustomEvent('srs:pulled', { detail: { entity: 'settings', at: Date.now() }}));
+        }
+
+        function setHistoryLocal(history) {
+          const st = getState(); st.history = history;
+          localStorage.setItem("scripture_srs_v1", JSON.stringify(st));
+          window.dispatchEvent(new CustomEvent('srs:pulled', { detail: { entity: 'history', at: Date.now() }}));
         }
 
         async function pullAll() {
@@ -230,8 +231,45 @@
               });
             }
 
+            // --- HISTORY (last 30 days, capped) ---
+            const sinceIso = new Date(Date.now() - 30*24*60*60*1000).toISOString();
+            const { data: hrows, error: eh } = await client
+              .from('history')
+              .select('*')
+              .eq('user_id', uid)
+              .gte('ts', sinceIso)
+              .order('ts', { ascending: false })
+              .limit(3000);
+
+            if (!eh && hrows) {
+              const pulled = (hrows || []).map(r => ({
+                id: r.id,
+                cardId: r.card_id,
+                pack: r.pack,
+                ref: r.ref,
+                mode: r.mode,            // 'fast' | 'slow'
+                fromBucket: r.from_bucket,
+                toBucket: r.to_bucket,
+                ts: new Date(r.ts).getTime(),
+              }));
+
+              const localHist = Array.isArray(getState().history) ? getState().history : [];
+              const map = new Map(localHist.map(x => [x.id, x]));
+              for (const r of pulled) {
+                const l = map.get(r.id);
+                if (!l || r.ts > (l.ts || 0)) map.set(r.id, r);
+              }
+              const merged = Array.from(map.values())
+                .filter(x => x.ts >= Date.now() - 30*24*60*60*1000) // keep 30d window
+                .sort((a,b) => b.ts - a.ts)
+                .slice(0, 3000);
+
+              setHistoryLocal(merged);
+            }
+
             // Single “pull complete” signal
             window.dispatchEvent(new CustomEvent('srs:pulled', { detail: { entity: 'all', at: Date.now() }}));
+
           } catch (err) {
             console.error('pullAll failed:', err);
           } finally {
@@ -355,14 +393,18 @@
           // Unsubscribe existing
           if (channel) { try { await client.removeChannel(channel); } catch {} channel = null; }
           // Subscribe to user-scoped changes
-          channel = client.channel('realtime:cards_settings')
+          channel = client.channel('realtime:cards_settings_history')
             .on('postgres_changes',
               { event: '*', schema: 'public', table: 'cards', filter: `user_id=eq.${uid}` },
               () => { if (!window._pushing) pullAll(); })
             .on('postgres_changes',
               { event: '*', schema: 'public', table: 'settings', filter: `user_id=eq.${uid}` },
               () => { if (!window._pushing) pullAll(); })
+            .on('postgres_changes',
+              { event: '*', schema: 'public', table: 'history', filter: `user_id=eq.${uid}` },
+              () => { if (!window._pushing) pullAll(); })
             .subscribe((status) => { console.log('Realtime status:', status); });
+
 
           // Poll as a safety net (missed events / offline resume)
           if (poller) clearInterval(poller);
