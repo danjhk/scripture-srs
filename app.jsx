@@ -1,13 +1,36 @@
 const { useEffect, useMemo, useRef, useState } = React;
 
 // ----- Types -----
-// Card: { id, ref, text, pack, box, nextDue, createdAt, updatedAt }
+// Card: {
+//   id, ref, text, pack,
+//   box, nextDue,               // legacy (kept for now)
+//   srs: {                      // new (Phase 0+)
+//     slow: { bucket, nextDue, updatedAt },
+//     fast: { bucket, nextDue, updatedAt }
+//   },
+//   order,                      // 1-based index within its pack
+//   createdAt, updatedAt
+// }
 
 // ----- Utilities -----
 const LS_KEY = "scripture_srs_v1";
 const now = () => Date.now();
 const day = 24 * 60 * 60 * 1000;
 const BOX_INTERVALS = [0, 1 * day, 3 * day, 7 * day, 14 * day, 30 * day];
+
+// --- New bucket model (Phase 0 groundwork) ---
+const BUCKETS = ["0D","1D","7D","1M","3M","6M"];
+const INTERVAL_MS = {
+  "0D": 0,
+  "1D": 1 * day,
+  "7D": 7 * day,
+  "1M": 30 * day,
+  "3M": 90 * day,
+  "6M": 180 * day,
+};
+
+// For migration bookkeeping
+const SCHEMA_VERSION = 1; // bump in later phases when structure changes again
 
 function hashString(s) {
   let h = 2166136261 >>> 0;
@@ -53,6 +76,94 @@ function loadState() {
   }
 }
 
+// --- Phase 0 helpers: migration & ordering ---
+
+// Map legacy numeric box (1..5) to new bucket labels conservatively
+// Old boxes: 1=1d, 2=3d, 3=7d, 4=14d, 5=30d
+function mapBoxToBucketLegacy(box) {
+  switch (Number(box)) {
+    case 1: return "1D";
+    case 2: return "1D"; // 3d → keep conservative (closer to 1D than 7D)
+    case 3: return "7D";
+    case 4: return "7D"; // 14d → closer to 7D than 1M
+    case 5: return "1M";
+    default: return "1D";
+  }
+}
+
+// Ensure srs.slow / srs.fast exist on a card
+function migrateCardSRS(card) {
+  const createdOrNow = card.createdAt || now();
+  const updatedOrCreated = card.updatedAt || createdOrNow;
+  const legacyBucket = mapBoxToBucketLegacy(card.box || 1);
+  const legacyNext = card.nextDue || 0;
+
+  let srs = card.srs;
+  if (!srs) {
+    const sub = { bucket: legacyBucket, nextDue: legacyNext, updatedAt: updatedOrCreated };
+    srs = { slow: { ...sub }, fast: { ...sub } };
+  } else {
+    // Fill any missing fields defensively
+    const ensureSub = (sub) => ({
+      bucket: sub?.bucket || legacyBucket,
+      nextDue: Number.isFinite(sub?.nextDue) ? sub.nextDue : legacyNext,
+      updatedAt: sub?.updatedAt || updatedOrCreated,
+    });
+    srs = {
+      slow: ensureSub(srs.slow),
+      fast: ensureSub(srs.fast),
+    };
+  }
+  return { ...card, srs };
+}
+
+// Assign 1-based `order` per pack; preserve existing order if present, else use createdAt then id
+function assignOrdersByPack(cards) {
+  const byPack = new Map();
+  for (const c of cards) {
+    const key = c.pack || "(unknown)";
+    if (!byPack.has(key)) byPack.set(key, []);
+    byPack.get(key).push(c);
+  }
+
+  // Build new id->order map
+  const orderMap = new Map();
+  for (const [pack, arr] of byPack.entries()) {
+    const sorted = arr.slice().sort((a, b) => {
+      const ao = (a.order ?? Number.POSITIVE_INFINITY);
+      const bo = (b.order ?? Number.POSITIVE_INFINITY);
+      if (ao !== bo) return ao - bo;
+      const ac = a.createdAt ?? 0;
+      const bc = b.createdAt ?? 0;
+      if (ac !== bc) return ac - bc;
+      return String(a.id).localeCompare(String(b.id));
+    });
+    sorted.forEach((c, idx) => orderMap.set(c.id, idx + 1));
+  }
+
+  // Return new array with `order` written
+  return cards.map(c => {
+    const newOrder = orderMap.get(c.id);
+    return (newOrder && newOrder !== c.order) ? { ...c, order: newOrder } : c;
+  });
+}
+
+// Full migration for a list of cards
+function migrateAllCards(cards) {
+  const srsReady = cards.map(migrateCardSRS);
+  const ordered = assignOrdersByPack(srsReady);
+  return ordered;
+}
+
+// Bump settings schema version or fill defaults
+function upgradeSettings(settings) {
+  const s = { ...defaultSettings(), ...(settings || {}) };
+  if (!s.schemaVersion || s.schemaVersion < SCHEMA_VERSION) {
+    s.schemaVersion = SCHEMA_VERSION;
+  }
+  return s;
+}
+
 function defaultSettings() { return { sessionTarget: 50, mode: "recognition", showFirstNWords: 6, shuffle: true }; }
 function nextDueFromBox(box) { return now() + BOX_INTERVALS[Math.max(1, Math.min(5, box))]; }
 function clampBox(b) { return Math.max(1, Math.min(5, b)); }
@@ -69,7 +180,17 @@ function App() {
   const fileInputRef = useRef(null);
 
   // Load & persist
-  useEffect(() => { const s = loadState(); setCards(s.cards || []); setSettings({ ...defaultSettings(), ...(s.settings || {}) }); }, []);
+  useEffect(() => {
+    const s = loadState();
+    const loadedCards = Array.isArray(s.cards) ? s.cards : [];
+    const migratedCards = migrateAllCards(loadedCards);
+    const upgradedSettings = upgradeSettings(s.settings);
+
+    setCards(migratedCards);
+    setSettings(upgradedSettings);
+    // No explicit save here; your existing [cards, settings] effect will persist automatically.
+  }, []);
+
   useEffect(() => { saveState({ cards, settings }); }, [cards, settings]);
 
   const packs = useMemo(() => ["ALL", ...Array.from(new Set(cards.map(c => c.pack))).sort()], [cards]);
@@ -103,12 +224,21 @@ function App() {
     for (const f of files) {
       const text = await f.text();
       const lines = text.split(/\r?\n/);
-      for (const line of lines) { const card = parseLineToCard(line, f.name); if (card) imported.push(card); }
+      for (const line of lines) {
+        const card = parseLineToCard(line, f.name);
+        if (card) imported.push(migrateCardSRS(card)); // ensure srs on new cards
+      }
     }
+
     const all = [...cards];
     const existing = new Set(all.map(c => c.id));
     const fresh = imported.filter(c => !existing.has(c.id));
-    setCards([...all, ...fresh]);
+
+    // Merge then (re)assign orders by pack to keep numbering 1..N
+    const merged = [...all, ...fresh];
+    const withOrder = assignOrdersByPack(merged);
+
+    setCards(withOrder);
     alert(`Imported ${fresh.length} new cards from ${files.length} file(s).`);
   }
 
