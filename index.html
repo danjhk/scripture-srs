@@ -437,6 +437,32 @@
                 if (error) return showErr(error, "History push failed");
               }
             }
+
+            // --------- GOAL CAPS (BATCHED UPSERT) ----------
+            {
+              const { capLog } = getState();
+              const entries = Object.entries(capLog || {});
+              if (entries.length) {
+                // convert to rows: PK is (user_id, day)
+                const rows = entries.map(([dayKey, caps]) => ({
+                  user_id: uid,
+                  day: dayKey, // 'YYYY-MM-DD' is fine for a Postgres DATE
+                  cap_slow: Number(caps?.slow || 0),
+                  cap_fast: Number(caps?.fast || 0),
+                  updated_at: nowIso,
+                }));
+
+                // batch to be friendly with payload/RT limits
+                for (let i = 0; i < rows.length; i += 500) {
+                  const chunkRows = rows.slice(i, i + 500);
+                  const { error } = await client
+                    .from('goal_caps')
+                    .upsert(chunkRows, { onConflict: 'user_id,day' });
+                  if (error) return showErr(error, "Goal caps push failed");
+                }
+              }
+            }
+
           } catch (err) {
             showErr(err, "Push failed");
           } finally {
