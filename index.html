@@ -64,6 +64,7 @@
           window.SUPABASE_ANON,
           { auth: { persistSession: true, detectSessionInUrl: true } }
         );
+        let didInitialPull = false;
 
         const cleanupHash = () => {
           if (location.hash && location.hash.includes('access_token')) {
@@ -76,7 +77,11 @@
           const signedIn = !!data.user;
           signinBtn.style.display  = signedIn ? 'none' : '';
           signoutBtn.style.display = signedIn ? '' : 'none';
-          if (signedIn) { pullAll(); }
+
+          if (signedIn && !didInitialPull) {
+            didInitialPull = true;
+            pullAll();
+          }
         }
 
         signinBtn.disabled = false;
@@ -107,7 +112,7 @@
         client.auth.onAuthStateChange((event, session) => {
           console.log('Auth event:', event, session?.user?.email || null);
           if (event === 'SIGNED_IN' && session?.user) cleanupHash();
-          refreshButtons();
+          refreshButtons(); // safe; won't loop-pull now
         });
 
         // ---- your existing helpers (unchanged) ----
@@ -118,7 +123,6 @@
         function setCardsLocal(cards) {
           const st = getState(); st.cards = cards;
           localStorage.setItem("scripture_srs_v1", JSON.stringify(st));
-          location.reload();
         }
         function setSettingsLocal(settings) {
           const st = getState(); st.settings = settings;
