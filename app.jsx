@@ -164,6 +164,64 @@ function upgradeSettings(settings) {
   return s;
 }
 
+// --- Phase 1 helpers: grading + legacy mirroring ---
+
+function gradeToBucket(label) {
+  return {
+    "Again": "0D",
+    "1D": "1D",
+    "7D": "7D",
+    "1M": "1M",
+    "3M": "3M",
+    "6M": "6M",
+  }[label];
+}
+
+// We still mirror to legacy box (1..5) so existing Stats/PackManager stay accurate.
+// Legacy meaning in your current app: 1=~1d, 2=~3d, 3=~7d, 4=~14d, 5=~30d
+function bucketToLegacyBox(bucket) {
+  switch (bucket) {
+    case "0D": return 1; // closest we have
+    case "1D": return 1;
+    case "7D": return 3;
+    case "1M": return 5;
+    case "3M": return 5; // no 90d/180d legacy buckets; use 30d as coarse mirror
+    case "6M": return 5;
+    default: return 1;
+  }
+}
+
+// Apply the chosen grade to the card, updating the correct schedule:
+//   - mode === 'recognition' ⇒ FAST schedule
+//   - mode === 'full' or 'review' ⇒ SLOW schedule
+// Also mirror to legacy {box,nextDue} for compatibility with current UI pieces.
+function applyGrade(card, label, mode) {
+  const key = (mode === "recognition") ? "fast" : "slow";
+  const bucket = gradeToBucket(label);
+  const next = now() + (INTERVAL_MS[bucket] ?? 0);
+
+  const updatedSrs = {
+    ...card.srs,
+    [key]: {
+      bucket,
+      nextDue: next,
+      updatedAt: now(),
+    },
+  };
+
+  // mirror to legacy fields so your Stats/PackManager keep reflecting changes
+  const legacyBox = bucketToLegacyBox(bucket);
+  const legacyNextDue = next;
+
+  return {
+    ...card,
+    srs: updatedSrs,
+    box: legacyBox,
+    nextDue: legacyNextDue,
+    updatedAt: now(),
+  };
+}
+
 function defaultSettings() { return { sessionTarget: 50, mode: "recognition", showFirstNWords: 6, shuffle: true }; }
 function nextDueFromBox(box) { return now() + BOX_INTERVALS[Math.max(1, Math.min(5, box))]; }
 function clampBox(b) { return Math.max(1, Math.min(5, b)); }
@@ -197,26 +255,28 @@ function App() {
 
   const dueCards = useMemo(() => {
     const t = now();
-    let list = cards.filter(c => (c.nextDue || 0) <= t);
+    const key = (settings.mode === "recognition") ? "fast" : "slow";
+    let list = cards.filter(c => {
+      const nd = c?.srs?.[key]?.nextDue ?? 0;
+      return nd <= t;
+    });
     if (filterPack !== "ALL") list = list.filter(c => c.pack === filterPack);
     if (settings.shuffle) list = shuffle([...list]);
     return list;
-  }, [cards, filterPack, settings.shuffle]);
+  }, [cards, filterPack, settings.shuffle, settings.mode]);
 
   const currentCard = dueCards[0];
 
   function shuffle(arr) { for (let i = arr.length - 1; i > 0; i--) { const j = Math.floor(Math.random() * (i + 1)); [arr[i], arr[j]] = [arr[j], arr[i]]; } return arr; }
   function startSession() { setSessionStart(now()); setCompleted(0); setRevealed(false); }
-  function handleGrade(grade) {
+  function handleGrade(label) {
     if (!currentCard) return;
-    let newBox = currentCard.box;
-    if (grade === "again") newBox = 1;
-    if (grade === "good") newBox = clampBox(currentCard.box + 1);
-    if (grade === "easy") newBox = clampBox(currentCard.box + 2);
-    const updated = { ...currentCard, box: newBox, nextDue: nextDueFromBox(newBox), updatedAt: now() };
-    setCards(prev => prev.map(c => (c.id === updated.id ? updated : c)));
-    setRevealed(false); setCompleted(x => x + 1);
+    const updated = applyGrade(currentCard, label, settings.mode);
+    setCards(prev => prev.map(c => (c.id === currentCard.id ? updated : c)));
+    setRevealed(false);
+    setCompleted(x => x + 1);
   }
+
   function handleReveal() { setRevealed(true); }
 
   async function importTxtFiles(files) {
@@ -368,9 +428,12 @@ function App() {
               )}
 
               <div className="grid grid-cols-3 gap-2">
-                <button className="px-4 py-3 rounded-xl bg-rose-600 text-white" onClick={() => handleGrade("again")}>Again</button>
-                <button className="px-4 py-3 rounded-xl bg-amber-500 text-white" onClick={() => handleGrade("good")}>Good</button>
-                <button className="px-4 py-3 rounded-xl bg-emerald-600 text-white" onClick={() => handleGrade("easy")}>Easy</button>
+                <button className="px-4 py-3 rounded-xl bg-rose-600 text-white"    onClick={() => handleGrade("Again")}>Again</button>
+                <button className="px-4 py-3 rounded-xl bg-gray-800 text-white"     onClick={() => handleGrade("1D")}>1D</button>
+                <button className="px-4 py-3 rounded-xl bg-gray-700 text-white"     onClick={() => handleGrade("7D")}>7D</button>
+                <button className="px-4 py-3 rounded-xl bg-indigo-600 text-white"   onClick={() => handleGrade("1M")}>1M</button>
+                <button className="px-4 py-3 rounded-xl bg-violet-600 text-white"   onClick={() => handleGrade("3M")}>3M</button>
+                <button className="px-4 py-3 rounded-xl bg-emerald-600 text-white"  onClick={() => handleGrade("6M")}>6M</button>
               </div>
 
               <EditableArea card={currentCard} onSave={editCurrentCard} />
