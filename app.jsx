@@ -81,7 +81,7 @@ function parseLineToCard(line, fileName) {
       text = clean;
     }
   }
-  const id = hashString(`${ref}|${text}`);
+  const id = hashString(`${fileName}|${ref}|${text}`);
   return {
     id,
     ref,
