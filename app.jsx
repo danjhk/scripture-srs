@@ -343,7 +343,8 @@ function App() {
       try {
         const s = loadState();
         if (Array.isArray(s.cards)) setCards(s.cards);
-        if (s.settings) setSettings(s.settings);
+        // Keep current UI mode; accept other server-side settings.
+        if (s.settings) setSettings(prev => ({ ...s.settings, mode: prev.mode }));
         if (Array.isArray(s.history)) setHistory(s.history);
         if (s.daily) setDaily(s.daily);
       } catch (e) { console.warn('Failed to apply pulled state', e); }
@@ -402,7 +403,7 @@ function App() {
       return nd <= t;
     });
     if (filterPack !== "ALL") list = list.filter((c) => c.pack === filterPack);
-    if (settings.shuffle) list = shuffle([...list]);
+    if (settings.shuffle && sessionQueue.length === 0) list = shuffle([...list]);
     const remain = Math.max(0, dailyRemaining(settings.mode));
     return list.slice(0, remain);
   }, [cards, filterPack, settings.shuffle, settings.mode, daily]);
@@ -433,6 +434,8 @@ function App() {
     setSessionStart(now());
     setCompleted(0);
     setRevealed(false);
+    // Freeze the current due list for this session so realtime/pulls don't reshuffle it.
+    setSessionQueue(dueCards.map(c => c.id));
   }
 
   function handleGrade(label) {
