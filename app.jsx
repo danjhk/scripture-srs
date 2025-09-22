@@ -103,13 +103,14 @@ function saveState(state) {
 }
 function loadState() {
   const raw = localStorage.getItem(LS_KEY);
-  if (!raw) return { cards: [], settings: defaultSettings() };
+  if (!raw) return { cards: [], settings: defaultSettings(), capLog: {} };
   try {
     const parsed = JSON.parse(raw);
     if (!parsed.settings) parsed.settings = defaultSettings();
+    if (!parsed.capLog) parsed.capLog = {};
     return parsed;
   } catch {
-    return { cards: [], settings: defaultSettings() };
+    return { cards: [], settings: defaultSettings(), capLog: {} };
   }
 }
 
@@ -254,6 +255,22 @@ function todayKey() {
   return new Date().toISOString().slice(0, 10);
 } // YYYY-MM-DD
 
+function isoDay(dateLike) {
+  const d = new Date(dateLike);
+  const z = new Date(Date.UTC(d.getFullYear(), d.getMonth(), d.getDate()));
+  return z.toISOString().slice(0, 10); // YYYY-MM-DD (UTC-normalized)
+}
+function startOfWeekISO(dt) {
+  const d = new Date(dt);
+  const day = (d.getDay() + 6) % 7; // 0 = Monday
+  d.setUTCDate(d.getUTCDate() - day);
+  d.setUTCHours(0,0,0,0);
+  return d.toISOString().slice(0,10);
+}
+function weekKey(dt) { return startOfWeekISO(dt); }         // YYYY-MM-DD (Mon)
+function monthKey(dt) { const d=new Date(dt); return `${d.getUTCFullYear()}-${String(d.getUTCMonth()+1).padStart(2,'0')}`; }
+function yearKey(dt) { return String(new Date(dt).getUTCFullYear()); }
+
 // --- Phase 5: keyboard shortcuts ---
 const SHORTCUT_MAP = {
   a: "Again",
@@ -289,6 +306,7 @@ function App() {
   const [sessionQueue, setSessionQueue] = useState([]); // array of card ids
   const [viewScheduleKey, setViewScheduleKey] = useState("slow"); // "slow" | "fast"
   const [versesPack, setVersesPack] = useState("ALL");
+  const [capLog, setCapLog] = useState({});
   const [daily, setDaily] = useState({ key: todayKey(), slow: 0, fast: 0 });
   const dailyRemaining = (mode) =>
     mode === "recognition"
@@ -331,11 +349,12 @@ function App() {
     setSettings(upgradedSettings);
     setHistory(loadedHistory);
     setDaily(loadedDaily);
+    setCapLog(s.capLog || {});          // ← NEW
   }, []);
 
   useEffect(() => {
-    saveState({ cards, settings, history, daily });
-  }, [cards, settings, history, daily]);
+    saveState({ cards, settings, history, daily, capLog });   // ← include capLog
+  }, [cards, settings, history, daily, capLog]);
 
   // When index.html finishes a pull (or another tab updates storage), reload into state
   useEffect(() => {
@@ -347,6 +366,7 @@ function App() {
         if (s.settings) setSettings(prev => ({ ...s.settings, mode: prev.mode }));
         if (Array.isArray(s.history)) setHistory(s.history);
         if (s.daily) setDaily(s.daily);
+        if (s.capLog) setCapLog(s.capLog);
       } catch (e) { console.warn('Failed to apply pulled state', e); }
     }
     const onPulled = () => applyPulled();
@@ -389,6 +409,24 @@ function App() {
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
   }, [currentCard, settings.mode, revealed]);
+
+  // Keep a daily snapshot of caps in capLog[YYYY-MM-DD] = { slow, fast }
+  useEffect(() => {
+    const key = todayKey();
+    setCapLog(prev => {
+      const existing = prev[key] || {};
+      const next = {
+        ...prev,
+        [key]: {
+          slow: settings.dailyCapSlow,
+          fast: settings.dailyCapFast,
+        }
+      };
+      // Avoid churn if nothing changed
+      if (existing.slow === next[key].slow && existing.fast === next[key].fast) return prev;
+      return next;
+    });
+  }, [settings.dailyCapSlow, settings.dailyCapFast, daily.key]); // update if new day or caps changed
 
   const packs = useMemo(
     () => ["ALL", ...Array.from(new Set(cards.map((c) => c.pack))).sort()],
@@ -704,6 +742,26 @@ function App() {
           </div>
           <div>
             <label className="block text-sm font-medium">Session Target</label>
+            <div>
+              <label className="block text-sm font-medium">Daily cap – Slow</label>
+              <input
+                className="mt-1 w-full border rounded-xl p-2"
+                type="number"
+                min={0}
+                value={settings.dailyCapSlow}
+                onChange={(e) => setSettings({ ...settings, dailyCapSlow: Math.max(0, Number(e.target.value || 0)) })}
+              />
+            </div>
+            <div>
+              <label className="block text-sm font-medium">Daily cap – Fast</label>
+              <input
+                className="mt-1 w-full border rounded-xl p-2"
+                type="number"
+                min={0}
+                value={settings.dailyCapFast}
+                onChange={(e) => setSettings({ ...settings, dailyCapFast: Math.max(0, Number(e.target.value || 0)) })}
+              />
+            </div>
             <input
               className="mt-1 w-full border rounded-xl p-2"
               type="number"
@@ -915,7 +973,11 @@ function App() {
         />
 
         {/* View History */}
-        <HistoryView history={history} cards={cards} />
+        <GoalHistoryView
+          history={history}
+          capLog={capLog}
+          defaultWindowDays={14}
+        />
 
         {/* Bulk Pack Manager Modal */}
         {packManagerOpen && (
@@ -1379,54 +1441,203 @@ function VersesView({
   );
 }
 
-function HistoryView({ history, cards }) {
-  const thirtyDaysAgo = now() - 30 * day;
+function GoalHistoryView({ history, capLog, defaultWindowDays = 14 }) {
+  const [group, setGroup] = React.useState("day"); // "day" | "week" | "month" | "year"
+  // Choose rolling window sizes
+  const windowSizes = { day: defaultWindowDays, week: 12, month: 12, year: 5 };
 
-  const rows = useMemo(() => {
-    // newest → oldest, last 30 days
-    const recent = history
-      .filter((h) => (h.ts || 0) >= thirtyDaysAgo)
-      .sort((a, b) => b.ts - a.ts);
-    return recent.map((h) => {
-      const card = cards.find((c) => c.id === h.cardId);
-      const sub = card?.srs?.[h.mode]; // 'fast' or 'slow' as logged
-      const since = daysSince(sub?.updatedAt);
-      const till = daysTill(sub?.nextDue);
-      return { ...h, card, since, till, bucketNow: sub?.bucket || null };
-    });
-  }, [history, cards]);
+  // Build per-day review counts from raw history
+  const perDayCounts = React.useMemo(() => {
+    const map = new Map(); // key YYYY-MM-DD -> { slow: n, fast: n }
+    for (const h of history) {
+      const key = isoDay(h.ts || Date.now());
+      const cur = map.get(key) || { slow: 0, fast: 0 };
+      if (h.mode === "slow") cur.slow += 1;
+      else cur.fast += 1;
+      map.set(key, cur);
+    }
+    return map;
+  }, [history]);
+
+  // Helper: effective caps for a date = snapshot that day if present, else the latest prior snapshot if any
+  const effectiveCapsForDate = React.useMemo(() => {
+    const entries = Object.entries(capLog)
+      .map(([k,v]) => [k, { slow: Number(v?.slow||0), fast: Number(v?.fast||0) }])
+      .sort((a,b) => a[0].localeCompare(b[0])); // sort by day ascending
+    return function getCaps(dayKey) {
+      // binary search latest entry <= dayKey
+      let lo = 0, hi = entries.length - 1, ans = null;
+      while (lo <= hi) {
+        const mid = (lo + hi) >> 1;
+        const mk = entries[mid][0];
+        if (mk <= dayKey) { ans = entries[mid][1]; lo = mid + 1; }
+        else { hi = mid - 1; }
+      }
+      return ans || { slow: 0, fast: 0 }; // default if we have no snapshots yet
+    };
+  }, [capLog]);
+
+  // Build rows based on grouping
+  const rows = React.useMemo(() => {
+    const nowTs = Date.now();
+    const out = [];
+    const kind = group;
+
+    // Select the last N periods and aggregate both caps and reviews
+    const N = windowSizes[kind];
+
+    // Build a list of period keys (most recent first)
+    const periodKeys = [];
+    if (kind === "day") {
+      for (let i = 0; i < N; i++) {
+        const d = new Date(nowTs - i*day);
+        periodKeys.push(isoDay(d));
+      }
+    } else if (kind === "week") {
+      let d = new Date(); d.setUTCHours(0,0,0,0);
+      // align to week start
+      let start = new Date(startOfWeekISO(d));
+      for (let i = 0; i < N; i++) {
+        const key = isoDay(new Date(start.getTime() - i*7*day));
+        periodKeys.push(key); // week key is a Monday date
+      }
+    } else if (kind === "month") {
+      let cur = new Date(); cur.setUTCDate(1); cur.setUTCHours(0,0,0,0);
+      for (let i = 0; i < N; i++) {
+        const d = new Date(Date.UTC(cur.getUTCFullYear(), cur.getUTCMonth() - i, 1));
+        periodKeys.push(monthKey(d));
+      }
+    } else { // year
+      const y = new Date().getUTCFullYear();
+      for (let i = 0; i < N; i++) periodKeys.push(String(y - i));
+    }
+
+    // Aggregation helpers
+    function bucketKeyByGroup(dt) {
+      if (kind === "day") return isoDay(dt);
+      if (kind === "week") return weekKey(dt);
+      if (kind === "month") return monthKey(dt);
+      return yearKey(dt);
+    }
+
+    // Aggregate reviews by period
+    const aggReviews = new Map(); // periodKey -> { slow, fast }
+    for (const [dKey, counts] of perDayCounts.entries()) {
+      const pKey = bucketKeyByGroup(dKey);
+      const cur = aggReviews.get(pKey) || { slow: 0, fast: 0 };
+      cur.slow += counts.slow;
+      cur.fast += counts.fast;
+      aggReviews.set(pKey, cur);
+    }
+
+    // Aggregate caps by period by summing effective caps of each day in that period
+    function* iterateDaysOfPeriod(pKey) {
+      if (kind === "day") {
+        yield pKey;
+        return;
+      }
+      if (kind === "week") {
+        const start = new Date(pKey + "T00:00:00Z");
+        for (let i = 0; i < 7; i++) yield isoDay(new Date(start.getTime() + i*day));
+        return;
+      }
+      if (kind === "month") {
+        const [yy, mm] = pKey.split("-").map(Number);
+        const start = Date.UTC(yy, mm - 1, 1);
+        const next = Date.UTC(yy, mm, 1);
+        for (let t = start; t < next; t += day) yield isoDay(t);
+        return;
+      }
+      // year
+      const y = Number(pKey);
+      const start = Date.UTC(y, 0, 1), next = Date.UTC(y+1, 0, 1);
+      for (let t = start; t < next; t += day) yield isoDay(t);
+    }
+
+    const aggCaps = new Map(); // periodKey -> { slow, fast }
+    for (const pKey of periodKeys) {
+      let slow = 0, fast = 0;
+      for (const dKey of iterateDaysOfPeriod(pKey)) {
+        // Only sum days up to today
+        if (dKey > isoDay(nowTs)) break;
+        const caps = effectiveCapsForDate(dKey);
+        slow += caps.slow || 0;
+        fast += caps.fast || 0;
+      }
+      aggCaps.set(pKey, { slow, fast });
+    }
+
+    // Build output rows newest → oldest
+    for (const pKey of periodKeys) {
+      const cap = aggCaps.get(pKey) || { slow: 0, fast: 0 };
+      const rev = aggReviews.get(pKey) || { slow: 0, fast: 0 };
+      const okSlow = rev.slow >= cap.slow;
+      const okFast = rev.fast >= cap.fast;
+      const label = (function() {
+        if (kind === "day") return pKey;
+        if (kind === "week") return `Week of ${pKey}`;
+        if (kind === "month") return pKey;
+        return pKey;
+      })();
+      out.push({ key: pKey, label, cap, rev, okSlow, okFast });
+    }
+
+    return out;
+  }, [group, perDayCounts, capLog]);
 
   return (
     <section className="rounded-2xl shadow p-4 bg-white">
-      <div className="flex items-center justify-between">
-        <h2 className="font-semibold">View History (last 30 days)</h2>
-        <div className="text-sm text-gray-500">{rows.length} entries</div>
+      <div className="flex items-center justify-between flex-wrap gap-3">
+        <h2 className="font-semibold">History (Goals vs. Reviews)</h2>
+        <div className="flex items-center gap-2">
+          <label className="text-sm">Group:</label>
+          <select
+            className="border rounded-xl p-2 text-sm"
+            value={group}
+            onChange={(e) => setGroup(e.target.value)}
+          >
+            <option value="day">Day (last {windowSizes.day})</option>
+            <option value="week">Week (last {windowSizes.week})</option>
+            <option value="month">Month (last {windowSizes.month})</option>
+            <option value="year">Year (last {windowSizes.year})</option>
+          </select>
+        </div>
       </div>
 
-      <div className="mt-3 grid gap-2 overflow-x-auto">
-        {rows.map((r) => (
-          <div key={r.id} className="p-3 border rounded-xl bg-gray-50">
-            <div className="text-sm font-semibold">
-              {r.card?.ref || "(deleted)"}{" "}
-              <span className="text-xs text-gray-500">· {r.pack}</span>
+      <div className="mt-3 grid gap-2">
+        {rows.map(r => {
+          const slowClass = r.okSlow ? "text-emerald-700" : "text-rose-700";
+          const fastClass = r.okFast ? "text-emerald-700" : "text-rose-700";
+          const totalCap = (r.cap.slow || 0) + (r.cap.fast || 0);
+          const totalRev = (r.rev.slow || 0) + (r.rev.fast || 0);
+          const totalOk = totalRev >= totalCap;
+          const totalClass = totalOk ? "text-emerald-800" : "text-rose-800";
+          return (
+            <div key={r.key} className="p-3 border rounded-xl bg-gray-50">
+              <div className="flex items-center justify-between">
+                <div className="text-sm font-semibold">{r.label}</div>
+                <div className={`text-sm font-semibold ${totalClass}`}>
+                  Total {totalRev} / {totalCap}
+                </div>
+              </div>
+              <div className="text-xs text-gray-700 mt-1 flex flex-wrap gap-4">
+                <div className={slowClass}>
+                  Slow: {r.rev.slow} / {r.cap.slow}
+                </div>
+                <div className={fastClass}>
+                  Fast: {r.rev.fast} / {r.cap.fast}
+                </div>
+              </div>
             </div>
-            <div className="text-xs text-gray-600">
-              {new Date(r.ts).toLocaleString()} ·{" "}
-              {r.mode === "fast" ? "Recognition" : "Review/Full"}
-            </div>
-            <div className="text-xs text-gray-700 mt-1">
-              {r.fromBucket} → {r.toBucket}
-              {r.bucketNow && r.bucketNow !== r.toBucket ? ` (now: ${r.bucketNow})` : ""}
-            </div>
-            <div className="text-[11px] text-gray-500">
-              since: {r.since ?? "–"}d · till: {r.till ?? "–"}d
-            </div>
-          </div>
-        ))}
+          );
+        })}
         {rows.length === 0 && (
-          <div className="text-sm text-gray-500">No reviews in the last 30 days.</div>
+          <div className="text-sm text-gray-500">No data yet.</div>
         )}
       </div>
+      <p className="mt-3 text-[11px] text-gray-500">
+        Caps are snapshotted daily and summed for weekly/monthly/yearly views. Colors: green = goal met, red = not met.
+      </p>
     </section>
   );
 }

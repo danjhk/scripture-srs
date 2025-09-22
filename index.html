@@ -138,8 +138,13 @@
 
         // ---- your existing helpers (unchanged) ----
         function getState() {
-          try { return JSON.parse(localStorage.getItem("scripture_srs_v1")) || { cards:[], settings:{} }; }
-          catch { return { cards:[], settings:{} }; }
+          try {
+            const s = JSON.parse(localStorage.getItem("scripture_srs_v1")) || { cards:[], settings:{} };
+            if (!s.capLog) s.capLog = {};  // ← NEW: ensure present
+            return s;
+          } catch {
+            return { cards:[], settings:{}, capLog:{} };
+          }
         }
         function setCardsLocal(cards) {
           const st = getState(); st.cards = cards;
@@ -157,6 +162,12 @@
           const st = getState(); st.history = history;
           localStorage.setItem("scripture_srs_v1", JSON.stringify(st));
           window.dispatchEvent(new CustomEvent('srs:pulled', { detail: { entity: 'history', at: Date.now() }}));
+        }
+
+        function setCapLogLocal(capLog) {
+          const st = getState(); st.capLog = capLog;
+          localStorage.setItem("scripture_srs_v1", JSON.stringify(st));
+          window.dispatchEvent(new CustomEvent('srs:pulled', { detail: { entity: 'capLog', at: Date.now() }}));
         }
 
         async function pullAll() {
@@ -272,6 +283,25 @@
               setHistoryLocal(merged);
             }
 
+            // --- GOAL CAPS (all rows, or cap to recent) ---
+            const { data: gcRows, error: egc } = await client
+              .from('goal_caps')
+              .select('*')
+              .eq('user_id', uid)
+              .order('day', { ascending: false })
+              .limit(2000); // plenty for multiple years
+
+            if (!egc && gcRows) {
+              // Merge: server overrides the same day keys; keep any local-only days
+              const localCap = getState().capLog || {};
+              const mergedCap = { ...localCap };
+              for (const r of gcRows) {
+                const dayKey = new Date(r.day).toISOString().slice(0,10); // YYYY-MM-DD
+                mergedCap[dayKey] = { slow: r.cap_slow|0, fast: r.cap_fast|0 };
+              }
+              setCapLogLocal(mergedCap);
+            }
+
             // Single “pull complete” signal
             window.dispatchEvent(new CustomEvent('srs:pulled', { detail: { entity: 'all', at: Date.now() }}));
 
@@ -377,6 +407,24 @@
               const { error } = await client.from('history').upsert(rows, { onConflict: 'id' });
               if (error) { console.error(error); /* do not block the rest */ }
             }
+
+            // --- GOAL CAPS UPSERT ---
+            const capLog = (getState().capLog) || {};
+            const capEntries = Object.entries(capLog);
+            if (capEntries.length) {
+              const rows = capEntries.map(([dayKey, v]) => ({
+                user_id: uid,
+                day: dayKey,              // YYYY-MM-DD
+                cap_slow: Number(v?.slow ?? 0),
+                cap_fast: Number(v?.fast ?? 0),
+                updated_at: nowIso,
+              }));
+              const { error: egc } = await client
+                .from('goal_caps')
+                .upsert(rows, { onConflict: 'user_id,day' });
+              if (egc) { console.error('goal_caps push failed', egc); /* non-fatal */ }
+            }
+
           } catch (err) {
             console.error('pushAll failed:', err);
           } finally {
@@ -416,6 +464,9 @@
               () => schedulePull())
             .on('postgres_changes',
               { event: '*', schema: 'public', table: 'history', filter: `user_id=eq.${uid}` },
+              () => schedulePull())
+            .on('postgres_changes',
+              { event: '*', schema: 'public', table: 'goal_caps', filter: `user_id=eq.${uid}` },
               () => schedulePull())
             .subscribe((status) => { console.log('Realtime status:', status); });
 
