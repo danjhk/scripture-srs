@@ -601,11 +601,12 @@ function App() {
 
   function editCurrentCard(newRef, newText) {
     if (!currentCard) return;
+    const newId = hashString(`${currentCard.pack}|${newRef}|${newText}`); // include pack!
     const updated = {
       ...currentCard,
       ref: newRef,
       text: newText,
-      id: hashString(`${newRef}|${newText}`),
+      id: newId,
       updatedAt: now(),
     };
     setCards((prev) => prev.map((c) => (c.id === currentCard.id ? updated : c)));

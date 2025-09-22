@@ -420,10 +420,14 @@
             // --------- HISTORY (BATCHED UPSERT) ----------
             const recent = Array.isArray(history) ? history.slice(-2000) : [];
             if (recent.length) {
+              // Build a set of valid card ids (after we upserted cards above)
+              const validCardIds = new Set((cards || []).map(c => c.id));
+
               const rows = recent.map(h => ({
                 id: h.id || crypto.randomUUID(),
                 user_id: uid,
-                card_id: h.cardId,
+                // If the referenced card no longer exists (id changed or card deleted), store NULL
+                card_id: validCardIds.has(h.cardId) ? h.cardId : null,
                 pack: h.pack,
                 ref: h.ref,
                 mode: h.mode, // 'slow' | 'fast'
