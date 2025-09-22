@@ -29,6 +29,7 @@
 
     <!-- Your app code -->
     <script type="text/babel" data-type="module" src="./app.jsx"></script>
+
     <script>
     (function initAuthBar() {
       // Render the bar immediately so something is visible
@@ -49,17 +50,26 @@
 
       function ready(cb) {
         if (window.supabase) return cb();
-        // also listen for the <script> load event as a backup
         const s = document.querySelector('script[src*="supabase-js"]');
         if (s) s.addEventListener('load', () => cb(), { once: true });
-        // and poll in case it was cached
         const t = setInterval(() => {
           if (window.supabase) { clearInterval(t); cb(); }
         }, 50);
       }
 
-      function start() {
-        const client = window.supabase.createClient(window.SUPABASE_URL, window.SUPABASE_ANON);
+      // --- NEW: make start async and only clean hash AFTER session is set
+      async function start() {
+        const client = window.supabase.createClient(
+          window.SUPABASE_URL,
+          window.SUPABASE_ANON,
+          { auth: { persistSession: true, detectSessionInUrl: true } }
+        );
+
+        const cleanupHash = () => {
+          if (location.hash && location.hash.includes('access_token')) {
+            history.replaceState({}, '', location.pathname + location.search);
+          }
+        };
 
         async function refreshButtons() {
           const { data } = await client.auth.getUser();
@@ -75,10 +85,7 @@
         signinBtn.onclick = async () => {
           const email = prompt("Enter your email for a sign-in link:");
           if (!email) return;
-
-          // redirect to THIS page exactly (origin + path), no query string
-          const redirectTo = `${location.origin}${location.pathname}`;
-
+          const redirectTo = `${location.origin}${location.pathname}`; // exact page (no hash/query)
           const { error } = await client.auth.signInWithOtp({
             email,
             options: { emailRedirectTo: redirectTo }
@@ -92,14 +99,16 @@
           refreshButtons();
         };
 
+        // --- NEW: let Supabase parse URL first, then tidy URL if signed in
+        const { data: { session } } = await client.auth.getSession();
+        if (session?.user) cleanupHash();
+        await refreshButtons();
+
         client.auth.onAuthStateChange((event, session) => {
           console.log('Auth event:', event, session?.user?.email || null);
+          if (event === 'SIGNED_IN' && session?.user) cleanupHash();
           refreshButtons();
         });
-        if (location.hash && location.hash.includes('access_token')) {
-          history.replaceState({}, '', location.pathname); // remove token hash from URL
-        }
-        refreshButtons();
 
         // ---- your existing helpers (unchanged) ----
         function getState() {
@@ -121,7 +130,8 @@
           if (!user?.user) return;
           const uid = user.user.id;
 
-          const { data: rows } = await client.from('cards').select('*').eq('user_id', uid);
+          const { data: rows, error: e1 } = await client.from('cards').select('*').eq('user_id', uid);
+          if (e1) { console.error(e1); return; }
           const pulledCards = (rows||[]).map(r => ({
             id: r.id, ref: r.ref, text: r.text, pack: r.pack,
             contentHash: r.content_hash, box: r.box, nextDue: r.next_due,
@@ -136,13 +146,14 @@
           }
           setCardsLocal(Array.from(map.values()).filter(c => !c.deletedAt));
 
-          const { data: s } = await client.from('settings').select('*').eq('user_id', uid).maybeSingle();
-          if (s) setSettingsLocal({
+          const { data: s, error: e2 } = await client.from('settings').select('*').eq('user_id', uid).maybeSingle();
+          if (!e2 && s) setSettingsLocal({
             sessionTarget: s.session_target, mode: s.mode,
             showFirstNWords: s.show_first_n_words, shuffle: s.shuffle,
           });
         }
 
+        // Expose push function (unchanged)
         window.pushSRS = async function pushAll() {
           const { data: user } = await client.auth.getUser();
           if (!user?.user) { alert("Sign in first."); return; }
