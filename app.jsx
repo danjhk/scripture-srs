@@ -96,6 +96,10 @@ function parseLineToCard(line, fileName) {
 
 function saveState(state) {
   localStorage.setItem(LS_KEY, JSON.stringify(state));
+  // If we’re not currently applying a cloud pull, schedule a push
+  if (!window._syncFromCloud && typeof window.schedulePush === 'function') {
+    window.schedulePush();
+  }
 }
 function loadState() {
   const raw = localStorage.getItem(LS_KEY);
@@ -294,6 +298,23 @@ function App() {
   const [packManagerOpen, setPackManagerOpen] = useState(false);
   const fileInputRef = useRef(null);
 
+  // --- Sync status (listen to global events from index.html) ---
+  const [sync, setSync] = useState(() => (window.srsSync ?? { pushing:false, pulling:false, lastPullAt:null, lastPushAt:null }));
+  useEffect(() => {
+    const onSync = () => setSync({ ...(window.srsSync ?? {}) });
+    window.addEventListener('srs-sync', onSync);
+    // Also pick up initial state if pull happened before mount
+    onSync();
+    return () => window.removeEventListener('srs-sync', onSync);
+  }, []);
+
+  function fmtTime(ts) {
+    if (!ts) return '—';
+    try {
+      return new Date(ts).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+    } catch { return '—'; }
+  }
+
   // Load & persist
   useEffect(() => {
     const s = loadState();
@@ -315,6 +336,32 @@ function App() {
   useEffect(() => {
     saveState({ cards, settings, history, daily });
   }, [cards, settings, history, daily]);
+
+  // When index.html finishes a pull (or another tab updates storage), reload into state
+  useEffect(() => {
+    function applyPulled() {
+      try {
+        const s = loadState();
+        if (Array.isArray(s.cards)) setCards(s.cards);
+        if (s.settings) setSettings(s.settings);
+        if (Array.isArray(s.history)) setHistory(s.history);
+        if (s.daily) setDaily(s.daily);
+      } catch (e) { console.warn('Failed to apply pulled state', e); }
+    }
+    const onPulled = () => applyPulled();
+    const onStorage = (e) => {
+      if (e.key === LS_KEY) applyPulled();
+    };
+    window.addEventListener('srs:pulled', onPulled);
+    window.addEventListener('storage', onStorage);
+    document.addEventListener('visibilitychange', () => {
+      if (document.visibilityState === 'visible' && window.pullSRS) window.pullSRS();
+    });
+    return () => {
+      window.removeEventListener('srs:pulled', onPulled);
+      window.removeEventListener('storage', onStorage);
+    };
+  }, []);
 
   // Keyboard shortcuts: grade with A / 1 / 3 / 7 / 0 / 9, Reveal with Enter/Space in Full
   useEffect(() => {
@@ -376,7 +423,13 @@ function App() {
     }
     return arr;
   }
-  function startSession() {
+  async function startSession() {
+    try {
+      // If signed in and pull is available, refresh first.
+      if (typeof window.pullSRS === 'function') {
+        await window.pullSRS();
+      }
+    } catch {}
     setSessionStart(now());
     setCompleted(0);
     setRevealed(false);
@@ -519,13 +572,30 @@ function App() {
             </button>
             <button
               className="px-3 py-2 rounded-xl bg-gray-200"
-              onClick={() => alert("Cloud sync can be added later (Supabase).")}
+              onClick={() => window.pullSRS ? window.pullSRS() : alert('Sign in first (top-right)')}
             >
-              Sync (later)
+              Pull from Cloud
             </button>
+            <button
+              className="px-3 py-2 rounded-xl bg-gray-200"
+              onClick={() => window.pushSRS ? window.pushSRS() : alert('Sign in first (top-right)')}
+            >
+              Push to Cloud
+            </button>
+
             <div className="text-sm text-gray-600">
               Due: {dueCards.length} | Done: {completed} | {sessionElapsedMin}m
             </div>
+            {/* Sync status chip */}
+            <span
+              className={
+                "text-xs px-2 py-1 rounded-full " +
+                (sync.pushing || sync.pulling ? "bg-amber-100 text-amber-800" : "bg-gray-100 text-gray-700")
+              }
+              title={`Last pull: ${fmtTime(sync.lastPullAt)} · Last push: ${fmtTime(sync.lastPushAt)}`}
+            >
+              {sync.pushing ? "Pushing…" : (sync.pulling ? "Pulling…" : `Last pull ${fmtTime(sync.lastPullAt)}`)}
+            </span>
           </div>
         </header>
 

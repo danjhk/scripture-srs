@@ -68,7 +68,25 @@
           window.SUPABASE_ANON,
           { auth: { persistSession: true, detectSessionInUrl: true } }
         );
+        window.supabaseClient = client;
         let didInitialPull = false;
+        // --- Sync status (global) ---
+        window.srsSync = { pushing:false, pulling:false, lastPullAt:null, lastPushAt:null };
+        const emitSync = () => window.dispatchEvent(new CustomEvent('srs-sync'));
+
+        let poller = null;
+        let channel = null;
+        window._pushing = false;        // guard: we're currently pushing
+        window._syncFromCloud = false;  // guard: we're applying pull → don't auto-push
+
+        const debounce = (fn, ms = 2000) => {
+          let t; return (...args) => { clearTimeout(t); t = setTimeout(() => fn(...args), ms); };
+        };
+
+        const isSignedIn = async () => {
+          const { data } = await client.auth.getUser();
+          return !!data.user;
+        };
 
         const cleanupHash = () => {
           if (location.hash && location.hash.includes('access_token')) {
@@ -84,8 +102,11 @@
 
           if (signedIn && !didInitialPull) {
             didInitialPull = true;
-            pullAll();
+            const uid = data.user.id;
+            await pullAll();
+            await startRealtime(uid);
           }
+          if (!signedIn) { await stopRealtime(); }
         }
 
         signinBtn.disabled = false;
@@ -105,6 +126,7 @@
 
         signoutBtn.onclick = async () => {
           await client.auth.signOut();
+          await stopRealtime();
           refreshButtons();
         };
 
@@ -127,25 +149,59 @@
         function setCardsLocal(cards) {
           const st = getState(); st.cards = cards;
           localStorage.setItem("scripture_srs_v1", JSON.stringify(st));
+          // Let the app know cloud data landed:
+          window.dispatchEvent(new CustomEvent('srs:pulled', { detail: { entity: 'cards', at: Date.now() }}));
         }
         function setSettingsLocal(settings) {
           const st = getState(); st.settings = settings;
           localStorage.setItem("scripture_srs_v1", JSON.stringify(st));
+          window.dispatchEvent(new CustomEvent('srs:pulled', { detail: { entity: 'settings', at: Date.now() }}));
         }
 
         async function pullAll() {
-          const { data: user } = await client.auth.getUser();
-          if (!user?.user) return;
-          const uid = user.user.id;
+          // Mark pulling
+          window.srsSync.pulling = true; emitSync();
+          window._syncFromCloud = true;
+          try {
+            const { data: user } = await client.auth.getUser();
+            if (!user?.user) return;
+            const uid = user.user.id;
 
-          const { data: rows, error: e1 } = await client.from('cards').select('*').eq('user_id', uid);
-          if (e1) { console.error(e1); return; }
-          const pulledCards = (rows||[]).map(r => ({
-            id: r.id, ref: r.ref, text: r.text, pack: r.pack,
-            contentHash: r.content_hash, box: r.box, nextDue: r.next_due,
-            createdAt: new Date(r.created_at).getTime(), updatedAt: new Date(r.updated_at).getTime(),
+            // --- CARDS ---
+            const { data: rows, error: e1 } = await client
+              .from('cards')
+              .select('*')
+              .eq('user_id', uid);
+
+            if (e1) { console.error(e1); return; }
+
+            const pulledCards = (rows || []).map(r => ({
+            id: r.id,
+            ref: r.ref,
+            text: r.text,
+            pack: r.pack,
+            srs: {
+              slow: {
+                bucket: r.srs_slow_bucket || '0D',
+                nextDue: Number(r.srs_slow_next_due || 0),
+                updatedAt: r.srs_slow_updated_at ? new Date(r.srs_slow_updated_at).getTime() : 0,
+                ease: 2.5, reps: 0, lapses: 0, intervalDays: 0, leech: false,
+              },
+              fast: {
+                bucket: r.srs_fast_bucket || (r.srs_slow_bucket || '0D'),
+                nextDue: Number(r.srs_fast_next_due || r.srs_slow_next_due || 0),
+                updatedAt: r.srs_fast_updated_at ? new Date(r.srs_fast_updated_at).getTime()
+                                                  : (r.srs_slow_updated_at ? new Date(r.srs_slow_updated_at).getTime() : 0),
+                ease: 2.5, reps: 0, lapses: 0, intervalDays: 0, leech: false,
+              },
+            },
+            order: r.order_in_pack || undefined,
+            createdAt: new Date(r.created_at).getTime(),
+            updatedAt: new Date(r.updated_at).getTime(),
             deletedAt: r.deleted_at ? new Date(r.deleted_at).getTime() : null,
           }));
+
+          // Merge with local (prefer fresher updatedAt)
           const local = getState().cards || [];
           const map = new Map(local.map(c => [c.id, c]));
           for (const r of pulledCards) {
@@ -154,42 +210,139 @@
           }
           setCardsLocal(Array.from(map.values()).filter(c => !c.deletedAt));
 
-          const { data: s, error: e2 } = await client.from('settings').select('*').eq('user_id', uid).maybeSingle();
-          if (!e2 && s) setSettingsLocal({
-            sessionTarget: s.session_target, mode: s.mode,
-            showFirstNWords: s.show_first_n_words, shuffle: s.shuffle,
-          });
+          // --- SETTINGS ---
+          const { data: s, error: e2 } = await client
+            .from('settings')
+            .select('*')
+            .eq('user_id', uid)
+            .maybeSingle();
+
+            if (!e2 && s) {
+              setSettingsLocal({
+                sessionTarget: s.session_target ?? 50,
+                mode: s.mode ?? 'recognition',
+                showFirstNWords: s.show_first_n_words ?? 6,
+                shuffle: s.shuffle ?? true,
+                dailyCapSlow: s.daily_cap_slow ?? 60,
+                dailyCapFast: s.daily_cap_fast ?? 200,
+                jitterPct: s.jitter_pct ?? 0.1,
+                schemaVersion: s.schema_version ?? 1,
+              });
+            }
+
+            // Single “pull complete” signal
+            window.dispatchEvent(new CustomEvent('srs:pulled', { detail: { entity: 'all', at: Date.now() }}));
+          } catch (err) {
+            console.error('pullAll failed:', err);
+          } finally {
+            // Release the guard after a tick so app can apply state without triggering push
+            setTimeout(() => { window._syncFromCloud = false; }, 50);
+            // Done pulling
+            window.srsSync.pulling = false;
+            window.srsSync.lastPullAt = Date.now();
+            emitSync();
+          }
         }
 
-        // Expose push function (unchanged)
-        window.pushSRS = async function pushAll() {
-          const { data: user } = await client.auth.getUser();
-          if (!user?.user) { alert("Sign in first."); return; }
-          const uid = user.user.id;
+        // expose a manual pull as well
+        window.pullSRS = pullAll;
 
-          const { cards, settings } = getState();
-          if (cards?.length) {
-            const rows = cards.map(c => ({
-              id: c.id || crypto.randomUUID(),
+        // Expose a debounced scheduler for auto-push (used by app.jsx)
+        window.schedulePush = debounce(() => window.pushSRS?.(), 1500);
+
+        // Expose push function (guarded)
+        window.pushSRS = async function pushAll() {
+          // Mark pushing
+          window.srsSync.pushing = true; emitSync();
+          window._pushing = true;
+          try {
+            const { data: user } = await client.auth.getUser();
+            if (!user?.user) { alert("Sign in first."); return; }
+            const uid = user.user.id;
+
+            const { cards, settings, history } = getState();
+            const nowIso = new Date().toISOString();
+
+            // --- CARDS UPSERT ---
+            if (cards?.length) {
+              const rows = cards.map(c => {
+              const slow = c?.srs?.slow || {};
+              const fast = c?.srs?.fast || {};
+              const content_hash = (c.contentHash || (function(s){
+                let h=2166136261>>>0;
+                for(let i=0;i<s.length;i++){h^=s.charCodeAt(i);h=Math.imul(h,16777619)}
+                return (h>>>0).toString(36)
+              })(`${c.ref}|${c.text}`));
+
+              return {
+                id: c.id || crypto.randomUUID(),
+                user_id: uid,
+                ref: c.ref, text: c.text, pack: c.pack,
+                content_hash,
+
+                // dual schedule fields
+                srs_slow_bucket: slow.bucket || '0D',
+                srs_slow_next_due: Number(slow.nextDue || 0),
+                srs_slow_updated_at: slow.updatedAt ? new Date(slow.updatedAt).toISOString() : nowIso,
+
+                srs_fast_bucket: fast.bucket || (slow.bucket || '0D'),
+                srs_fast_next_due: Number(fast.nextDue || slow.nextDue || 0),
+                srs_fast_updated_at: fast.updatedAt
+                    ? new Date(fast.updatedAt).toISOString()
+                    : (slow.updatedAt ? new Date(slow.updatedAt).toISOString() : nowIso),
+
+                order_in_pack: c.order || null,
+
+                created_at: c.createdAt ? new Date(c.createdAt).toISOString() : nowIso,
+                updated_at: c.updatedAt ? new Date(c.updatedAt).toISOString() : nowIso,
+                deleted_at: c.deletedAt ? new Date(c.deletedAt).toISOString() : null,
+              };
+              });
+
+              const { error } = await client.from('cards').upsert(rows, { onConflict: 'id' });
+              if (error) { console.error(error); alert("Cards push failed."); return; }
+            }
+
+            // --- SETTINGS UPSERT ---
+            await client.from('settings').upsert({
               user_id: uid,
-              ref: c.ref, text: c.text, pack: c.pack,
-              content_hash: (c.contentHash || (function(s){let h=2166136261>>>0;for(let i=0;i<s.length;i++){h^=s.charCodeAt(i);h=Math.imul(h,16777619)}return (h>>>0).toString(36)})(`${c.ref}|${c.text}`)),
-              box: c.box||1, next_due: c.nextDue||0,
-              created_at: new Date(c.createdAt||Date.now()).toISOString(),
-              updated_at: new Date(c.updatedAt||Date.now()).toISOString(),
-              deleted_at: c.deletedAt ? new Date(c.deletedAt).toISOString() : null,
-            }));
-            await client.from('cards').upsert(rows, { onConflict: 'id' });
+              session_target: settings?.sessionTarget ?? 50,
+              mode: settings?.mode ?? 'recognition',
+              show_first_n_words: settings?.showFirstNWords ?? 6,
+              shuffle: settings?.shuffle ?? true,
+              daily_cap_slow: settings?.dailyCapSlow ?? 60,
+              daily_cap_fast: settings?.dailyCapFast ?? 200,
+              jitter_pct: settings?.jitterPct ?? 0.1,
+              schema_version: settings?.schemaVersion ?? 1,
+              updated_at: nowIso,
+            });
+
+            // --- HISTORY APPEND (optional but recommended) ---
+            const recent = Array.isArray(history) ? history.slice(-500) : [];
+            if (recent.length) {
+              const rows = recent.map(h => ({
+                id: h.id || crypto.randomUUID(),
+                user_id: uid,
+                card_id: h.cardId,
+                pack: h.pack,
+                ref: h.ref,
+                mode: h.mode, // 'slow' | 'fast'
+                from_bucket: h.fromBucket,
+                to_bucket: h.toBucket,
+                ts: h.ts ? new Date(h.ts).toISOString() : nowIso,
+              }));
+              const { error } = await client.from('history').upsert(rows, { onConflict: 'id' });
+              if (error) { console.error(error); /* do not block the rest */ }
+            }
+          } catch (err) {
+            console.error('pushAll failed:', err);
+          } finally {
+            window._pushing = false;
+            // Done pushing
+            window.srsSync.pushing = false;
+            window.srsSync.lastPushAt = Date.now();
+            emitSync();
           }
-          await client.from('settings').upsert({
-            user_id: uid,
-            session_target: settings?.sessionTarget ?? 50,
-            mode: settings?.mode ?? 'recognition',
-            show_first_n_words: settings?.showFirstNWords ?? 6,
-            shuffle: settings?.shuffle ?? true,
-            updated_at: new Date().toISOString(),
-          });
-          alert("Pushed local data to cloud.");
         };
 
         const pushBtn = document.createElement('button');
@@ -197,6 +350,29 @@
         pushBtn.className = 'fixed bottom-4 right-4 px-4 py-2 rounded-xl bg-emerald-600 text-white shadow';
         pushBtn.onclick = () => window.pushSRS();
         document.body.appendChild(pushBtn);
+
+        async function startRealtime(uid) {
+          // Unsubscribe existing
+          if (channel) { try { await client.removeChannel(channel); } catch {} channel = null; }
+          // Subscribe to user-scoped changes
+          channel = client.channel('realtime:cards_settings')
+            .on('postgres_changes',
+              { event: '*', schema: 'public', table: 'cards', filter: `user_id=eq.${uid}` },
+              () => { if (!window._pushing) pullAll(); })
+            .on('postgres_changes',
+              { event: '*', schema: 'public', table: 'settings', filter: `user_id=eq.${uid}` },
+              () => { if (!window._pushing) pullAll(); })
+            .subscribe((status) => { console.log('Realtime status:', status); });
+
+          // Poll as a safety net (missed events / offline resume)
+          if (poller) clearInterval(poller);
+          poller = setInterval(() => { if (!window._pushing) pullAll(); }, 60000);
+        }
+
+        async function stopRealtime() {
+          if (poller) { clearInterval(poller); poller = null; }
+          if (channel) { try { await client.removeChannel(channel); } catch {} channel = null; }
+        }
       }
 
       function boot() {
