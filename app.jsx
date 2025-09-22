@@ -657,13 +657,11 @@ function App() {
           </div>
         </header>
 
-        {/* Daily cap status bar */}
+        {/* Daily goal status bar */}
         <div className="text-xs text-gray-500">
-          Daily {settings.mode === "recognition" ? "FAST" : "SLOW"} cap:{" "}
-          {settings.mode === "recognition"
-            ? settings.dailyCapFast
-            : settings.dailyCapSlow}
-          {" · "}used:{" "}
+          Daily {settings.mode === "recognition" ? "FAST" : "SLOW"} goal:{" "}
+          {settings.mode === "recognition" ? settings.dailyCapFast : settings.dailyCapSlow}
+          {" · "}done:{" "}
           {settings.mode === "recognition" ? daily.fast : daily.slow}
           {" · "}left: {Math.max(0, dailyRemaining(settings.mode))}
         </div>
@@ -741,40 +739,33 @@ function App() {
             </select>
           </div>
           <div>
-            <label className="block text-sm font-medium">Session Target</label>
-            <div>
-              <label className="block text-sm font-medium">Daily cap – Slow</label>
+            <label className="block text-sm font-medium">Daily goals</label>
+
+            <div className="mt-2">
+              <label className="block text-sm font-medium">Daily goal – Slow</label>
               <input
                 className="mt-1 w-full border rounded-xl p-2"
                 type="number"
                 min={0}
                 value={settings.dailyCapSlow}
-                onChange={(e) => setSettings({ ...settings, dailyCapSlow: Math.max(0, Number(e.target.value || 0)) })}
+                onChange={(e) =>
+                  setSettings({ ...settings, dailyCapSlow: Math.max(0, Number(e.target.value || 0)) })
+                }
               />
             </div>
-            <div>
-              <label className="block text-sm font-medium">Daily cap – Fast</label>
+
+            <div className="mt-3">
+              <label className="block text-sm font-medium">Daily goal – Fast</label>
               <input
                 className="mt-1 w-full border rounded-xl p-2"
                 type="number"
                 min={0}
                 value={settings.dailyCapFast}
-                onChange={(e) => setSettings({ ...settings, dailyCapFast: Math.max(0, Number(e.target.value || 0)) })}
+                onChange={(e) =>
+                  setSettings({ ...settings, dailyCapFast: Math.max(0, Number(e.target.value || 0)) })
+                }
               />
             </div>
-            <input
-              className="mt-1 w-full border rounded-xl p-2"
-              type="number"
-              min={10}
-              max={200}
-              value={settings.sessionTarget}
-              onChange={(e) =>
-                setSettings({
-                  ...settings,
-                  sessionTarget: Number(e.target.value),
-                })
-              }
-            />
           </div>
         </section>
 
@@ -1636,7 +1627,7 @@ function GoalHistoryView({ history, capLog, defaultWindowDays = 14 }) {
         )}
       </div>
       <p className="mt-3 text-[11px] text-gray-500">
-        Caps are snapshotted daily and summed for weekly/monthly/yearly views. Colors: green = goal met, red = not met.
+        Goals are snapshotted daily and summed for weekly/monthly/yearly views. Colors: green = goal met, red = not met.
       </p>
     </section>
   );
