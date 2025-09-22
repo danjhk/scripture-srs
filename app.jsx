@@ -250,6 +250,16 @@ function todayKey() {
   return new Date().toISOString().slice(0, 10);
 } // YYYY-MM-DD
 
+// --- Phase 5: keyboard shortcuts ---
+const SHORTCUT_MAP = {
+  a: "Again",
+  "1": "1D",
+  "3": "3D",
+  "7": "7D",
+  "0": "30D",
+  "9": "90D",
+};
+
 function defaultSettings() {
   return {
     sessionTarget: 50,
@@ -305,6 +315,32 @@ function App() {
   useEffect(() => {
     saveState({ cards, settings, history, daily });
   }, [cards, settings, history, daily]);
+
+  // Keyboard shortcuts: grade with A / 1 / 3 / 7 / 0 / 9, Reveal with Enter/Space in Full
+  useEffect(() => {
+    function onKey(e) {
+      // ignore when typing in inputs/textareas
+      const tag = (e.target && e.target.tagName) ? e.target.tagName.toLowerCase() : "";
+      if (tag === "input" || tag === "textarea" || e.target.isContentEditable) return;
+
+      // Reveal in Full mode
+      if ((e.key === "Enter" || e.key === " ") && settings.mode === "full" && !revealed) {
+        e.preventDefault();
+        handleReveal();
+        return;
+      }
+
+      // Grade shortcuts
+      const lbl = SHORTCUT_MAP[e.key.toLowerCase?.() || e.key];
+      if (!lbl) return;
+      // Don't trigger if no card
+      if (!currentCard) return;
+      e.preventDefault();
+      handleGrade(lbl);
+    }
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [currentCard, settings.mode, revealed]);
 
   const packs = useMemo(
     () => ["ALL", ...Array.from(new Set(cards.map((c) => c.pack))).sort()],
@@ -470,7 +506,7 @@ function App() {
     : 0;
 
   return (
-    <div className="min-h-screen bg-gray-50 p-4">
+    <div className="min-h-screen bg-gray-50 p-4 pb-28 sm:pb-4">
       <div className="max-w-3xl mx-auto space-y-4">
         <header className="flex items-center justify-between">
           <h1 className="text-2xl font-bold">Scripture SRS</h1>
@@ -675,6 +711,10 @@ function App() {
                 </button>
               )}
 
+              <div className="text-[11px] text-gray-500">
+                Shortcuts: A (Again), 1, 3, 7, 0 (30D), 9 (90D). In Full mode, press Enter/Space to Reveal.
+              </div>
+
               {/* Verse body */}
               {settings.mode === "recognition" && (
                 <div className="rounded-xl border p-4 bg-gray-50">
@@ -700,44 +740,60 @@ function App() {
                 </div>
               )}
 
-              {/* Fixed-interval buttons */}
-              <div className="grid grid-cols-3 sm:grid-cols-6 gap-2">
-                <button
+              {/* Fixed-interval buttons (desktop/tablet) */}
+              <div className="hidden sm:grid sm:grid-cols-6 gap-2">
+                <button title="Again (A)" aria-label="Again (A)"
                   className="px-3 py-2 rounded-xl bg-rose-600 text-white"
-                  onClick={() => handleGrade("Again")}
-                >
-                  <div className="font-semibold">Again</div>
-                </button>
-                <button
+                  onClick={() => handleGrade("Again")}><div className="font-semibold">Again</div></button>
+
+                <button title="1 day (1)" aria-label="1 day (1)"
                   className="px-3 py-2 rounded-xl bg-gray-800 text-white"
-                  onClick={() => handleGrade("1D")}
-                >
-                  <div className="font-semibold">1D</div>
-                </button>
-                <button
+                  onClick={() => handleGrade("1D")}><div className="font-semibold">1D</div></button>
+
+                <button title="3 days (3)" aria-label="3 days (3)"
                   className="px-3 py-2 rounded-xl bg-gray-700 text-white"
-                  onClick={() => handleGrade("3D")}
-                >
-                  <div className="font-semibold">3D</div>
-                </button>
-                <button
+                  onClick={() => handleGrade("3D")}><div className="font-semibold">3D</div></button>
+
+                <button title="7 days (7)" aria-label="7 days (7)"
                   className="px-3 py-2 rounded-xl bg-indigo-600 text-white"
-                  onClick={() => handleGrade("7D")}
-                >
-                  <div className="font-semibold">7D</div>
-                </button>
-                <button
+                  onClick={() => handleGrade("7D")}><div className="font-semibold">7D</div></button>
+
+                <button title="30 days (0)" aria-label="30 days (0)"
                   className="px-3 py-2 rounded-xl bg-violet-600 text-white"
-                  onClick={() => handleGrade("30D")}
-                >
-                  <div className="font-semibold">30D</div>
-                </button>
-                <button
+                  onClick={() => handleGrade("30D")}><div className="font-semibold">30D</div></button>
+
+                <button title="90 days (9)" aria-label="90 days (9)"
                   className="px-3 py-2 rounded-xl bg-emerald-600 text-white"
-                  onClick={() => handleGrade("90D")}
-                >
-                  <div className="font-semibold">90D</div>
-                </button>
+                  onClick={() => handleGrade("90D")}><div className="font-semibold">90D</div></button>
+              </div>
+
+              {/* Sticky mobile grading bar */}
+              <div className="sm:hidden fixed left-0 right-0 bottom-0 z-40 border-t bg-white/95 backdrop-blur p-3">
+                <div className="grid grid-cols-3 gap-2">
+                  <button title="Again (A)" aria-label="Again (A)"
+                    className="px-3 py-2 rounded-xl bg-rose-600 text-white"
+                    onClick={() => handleGrade("Again")}><div className="font-semibold">Again</div></button>
+
+                  <button title="1 day (1)" aria-label="1 day (1)"
+                    className="px-3 py-2 rounded-xl bg-gray-800 text-white"
+                    onClick={() => handleGrade("1D")}><div className="font-semibold">1D</div></button>
+
+                  <button title="3 days (3)" aria-label="3 days (3)"
+                    className="px-3 py-2 rounded-xl bg-gray-700 text-white"
+                    onClick={() => handleGrade("3D")}><div className="font-semibold">3D</div></button>
+
+                  <button title="7 days (7)" aria-label="7 days (7)"
+                    className="px-3 py-2 rounded-xl bg-indigo-600 text-white"
+                    onClick={() => handleGrade("7D")}><div className="font-semibold">7D</div></button>
+
+                  <button title="30 days (0)" aria-label="30 days (0)"
+                    className="px-3 py-2 rounded-xl bg-violet-600 text-white"
+                    onClick={() => handleGrade("30D")}><div className="font-semibold">30D</div></button>
+
+                  <button title="90 days (9)" aria-label="90 days (9)"
+                    className="px-3 py-2 rounded-xl bg-emerald-600 text-white"
+                    onClick={() => handleGrade("90D")}><div className="font-semibold">90D</div></button>
+                </div>
               </div>
 
               <EditableArea card={currentCard} onSave={editCurrentCard} />
@@ -1165,7 +1221,7 @@ function VersesView({
         </button>
       </div>
 
-      <div className="mt-3 grid gap-2">
+      <div className="mt-3 grid gap-2 overflow-x-auto">
         {list.map((c) => {
           const sub = c?.srs?.[scheduleKey];
           const since = daysSince(sub?.updatedAt);
@@ -1228,7 +1284,7 @@ function HistoryView({ history, cards }) {
         <div className="text-sm text-gray-500">{rows.length} entries</div>
       </div>
 
-      <div className="mt-3 grid gap-2">
+      <div className="mt-3 grid gap-2 overflow-x-auto">
         {rows.map((r) => (
           <div key={r.id} className="p-3 border rounded-xl bg-gray-50">
             <div className="text-sm font-semibold">
