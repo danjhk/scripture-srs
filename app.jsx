@@ -905,26 +905,48 @@ function App() {
           <PackManager
             cards={cards}
             onClose={() => setPackManagerOpen(false)}
-            onDelete={(packsToDelete) => {
+            onDelete={async (packsToDelete) => {
+              // Normalize helper (same as before)
               const norm = (s) => {
                 const raw = String(s ?? "");
-                const n =
-                  typeof raw.normalize === "function"
-                    ? raw.normalize("NFC")
-                    : raw;
+                const n = typeof raw.normalize === "function" ? raw.normalize("NFC") : raw;
                 return n.replace(/\u00A0/g, " ").replace(/\s+/g, " ").trim().toLowerCase();
               };
-              const del = new Set(packsToDelete.map(norm));
+              const delNorm = new Set(packsToDelete.map(norm));
+
+              // 1) Delete on server (if signed in)
+              try {
+                const client = window.supabaseClient;
+                if (client) {
+                  const { data: u } = await client.auth.getUser();
+                  const uid = u?.user?.id;
+                  if (uid) {
+                    // Use raw pack names (not normalized) for the DB filter
+                    const { error } = await client
+                      .from("cards")
+                      .delete()
+                      .eq("user_id", uid)
+                      .in("pack", packsToDelete);
+                    if (error) {
+                      console.error("Server delete failed:", error);
+                      alert("Server delete failed: " + error.message);
+                    }
+                  }
+                }
+              } catch (e) {
+                console.warn("Delete on server skipped/failed:", e);
+              }
+
+              // 2) Prune locally so UI matches immediately
               setCards((prev) => {
                 const before = prev.length;
-                const next = prev.filter((c) => !del.has(norm(c.pack)));
+                const next = prev.filter((c) => !delNorm.has(norm(c.pack)));
                 const removed = before - next.length;
                 if (removed === 0) alert("No cards matched those pack names.");
-                else alert(`Deleted ${removed} card(s) from ${del.size} pack(s).`);
+                else alert(`Deleted ${removed} card(s) from ${delNorm.size} pack(s).`);
                 return next;
               });
-              if (filterPack !== "ALL" && del.has(norm(filterPack)))
-                setFilterPack("ALL");
+              if (filterPack !== "ALL" && delNorm.has(norm(filterPack))) setFilterPack("ALL");
               setPackManagerOpen(false);
             }}
             onExport={(packsToExport) => {
