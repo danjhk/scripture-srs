@@ -30,137 +30,157 @@
     <!-- Your app code -->
     <script type="text/babel" data-type="module" src="./app.jsx"></script>
     <script>
-        (function initAuthBar(){
-          // Run after DOM is ready, then wait until the Supabase UMD is present
-          function startWhenReady() {
-            if (!window.supabase) {           // Supabase UMD not ready yet (it's loaded with `defer`)
-              return setTimeout(startWhenReady, 50);
-            }
-        
-            // --- your original code from here down ---
-            const client = window.supabase.createClient(window.SUPABASE_URL, window.SUPABASE_ANON);
-        
-            // Little auth bar
-            const bar = document.createElement('div');
-            bar.style.position='fixed'; bar.style.top='8px'; bar.style.right='8px'; bar.style.zIndex='1000';
-            bar.innerHTML = `
-              <button id="srs-signin" class="px-3 py-2 rounded-xl bg-indigo-600 text-white">Sign in</button>
-              <button id="srs-signout" class="px-3 py-2 rounded-xl bg-gray-200" style="display:none">Sign out</button>
-            `;
-            document.body.appendChild(bar);
-        
-            async function refreshButtons() {
-              const { data } = await client.auth.getUser();
-              const signedIn = !!data.user;
-              document.getElementById('srs-signin').style.display = signedIn ? 'none' : '';
-              document.getElementById('srs-signout').style.display = signedIn ? '' : 'none';
-              if (signedIn) { pullAll(); }
-            }
-        
-            document.getElementById('srs-signin').onclick = async () => {
-              const email = prompt("Enter your email for a sign-in link:");
-              if (!email) return;
-              const { error } = await client.auth.signInWithOtp({
-                email,
-                options: { emailRedirectTo: location.href }
-              });
-              if (error) alert(error.message);
-              else alert("Check your email and click the sign-in link.");
-            };
-            document.getElementById('srs-signout').onclick = async () => {
-              await client.auth.signOut();
-              refreshButtons();
-            };
-        
-            client.auth.onAuthStateChange(() => refreshButtons());
-            refreshButtons();
-        
-            // ---- pull/push helpers ----
-            function getState() {
-              try { return JSON.parse(localStorage.getItem("scripture_srs_v1")) || { cards:[], settings:{} }; }
-              catch { return { cards:[], settings:{} }; }
-            }
-            function setCardsLocal(cards) {
-              const st = getState(); st.cards = cards;
-              localStorage.setItem("scripture_srs_v1", JSON.stringify(st));
-              location.reload();
-            }
-            function setSettingsLocal(settings) {
-              const st = getState(); st.settings = settings;
-              localStorage.setItem("scripture_srs_v1", JSON.stringify(st));
-            }
-        
-            async function pullAll() {
-              const { data: user } = await client.auth.getUser();
-              if (!user?.user) return;
-              const uid = user.user.id;
-        
-              const { data: rows } = await client.from('cards').select('*').eq('user_id', uid);
-              const pulledCards = (rows||[]).map(r => ({
-                id: r.id, ref: r.ref, text: r.text, pack: r.pack,
-                contentHash: r.content_hash, box: r.box, nextDue: r.next_due,
-                createdAt: new Date(r.created_at).getTime(), updatedAt: new Date(r.updated_at).getTime(),
-                deletedAt: r.deleted_at ? new Date(r.deleted_at).getTime() : null,
-              }));
-              const local = getState().cards || [];
-              const map = new Map(local.map(c => [c.id, c]));
-              for (const r of pulledCards) {
-                const l = map.get(r.id);
-                if (!l || r.updatedAt > (l.updatedAt || 0)) map.set(r.id, r);
-              }
-              setCardsLocal(Array.from(map.values()).filter(c => !c.deletedAt));
-        
-              const { data: s } = await client.from('settings').select('*').eq('user_id', uid).maybeSingle();
-              if (s) setSettingsLocal({
-                sessionTarget: s.session_target, mode: s.mode,
-                showFirstNWords: s.show_first_n_words, shuffle: s.shuffle,
-              });
-            }
-        
-            window.pushSRS = async function pushAll() {
-              const { data: user } = await client.auth.getUser();
-              if (!user?.user) { alert("Sign in first."); return; }
-              const uid = user.user.id;
-        
-              const { cards, settings } = getState();
-              if (cards?.length) {
-                const rows = cards.map(c => ({
-                  id: c.id || crypto.randomUUID(),
-                  user_id: uid,
-                  ref: c.ref, text: c.text, pack: c.pack,
-                  content_hash: (c.contentHash || (function(s){let h=2166136261>>>0;for(let i=0;i<s.length;i++){h^=s.charCodeAt(i);h=Math.imul(h,16777619)}return (h>>>0).toString(36)})(`${c.ref}|${c.text}`)),
-                  box: c.box||1, next_due: c.nextDue||0,
-                  created_at: new Date(c.createdAt||Date.now()).toISOString(),
-                  updated_at: new Date(c.updatedAt||Date.now()).toISOString(),
-                  deleted_at: c.deletedAt ? new Date(c.deletedAt).toISOString() : null,
-                }));
-                await client.from('cards').upsert(rows, { onConflict: 'id' });
-              }
-              await client.from('settings').upsert({
-                user_id: uid,
-                session_target: settings?.sessionTarget ?? 50,
-                mode: settings?.mode ?? 'recognition',
-                show_first_n_words: settings?.showFirstNWords ?? 6,
-                shuffle: settings?.shuffle ?? true,
-                updated_at: new Date().toISOString(),
-              });
-              alert("Pushed local data to cloud. Open on another device, sign in, and it will pull.");
-            };
-        
-            const pushBtn = document.createElement('button');
-            pushBtn.textContent = 'Push to Cloud';
-            pushBtn.className = 'fixed bottom-4 right-4 px-4 py-2 rounded-xl bg-emerald-600 text-white shadow';
-            pushBtn.onclick = () => window.pushSRS();
-            document.body.appendChild(pushBtn);
+    (function initAuthBar() {
+      // Render the bar immediately so something is visible
+      const bar = document.createElement('div');
+      bar.style.position='fixed'; bar.style.top='8px'; bar.style.right='8px'; bar.style.zIndex='100000';
+      bar.innerHTML = `
+        <button id="srs-signin" class="px-3 py-2 rounded-xl bg-indigo-600 text-white">Sign in</button>
+        <button id="srs-signout" class="px-3 py-2 rounded-xl bg-gray-200" style="display:none">Sign out</button>
+      `;
+      document.body.appendChild(bar);
+
+      const signinBtn  = document.getElementById('srs-signin');
+      const signoutBtn = document.getElementById('srs-signout');
+
+      // Disable until Supabase is loaded
+      signinBtn.disabled = true;
+      signinBtn.textContent = 'Loading...';
+
+      function ready(cb) {
+        if (window.supabase) return cb();
+        // also listen for the <script> load event as a backup
+        const s = document.querySelector('script[src*="supabase-js"]');
+        if (s) s.addEventListener('load', () => cb(), { once: true });
+        // and poll in case it was cached
+        const t = setInterval(() => {
+          if (window.supabase) { clearInterval(t); cb(); }
+        }, 50);
+      }
+
+      function start() {
+        const client = window.supabase.createClient(window.SUPABASE_URL, window.SUPABASE_ANON);
+
+        async function refreshButtons() {
+          const { data } = await client.auth.getUser();
+          const signedIn = !!data.user;
+          signinBtn.style.display  = signedIn ? 'none' : '';
+          signoutBtn.style.display = signedIn ? '' : 'none';
+          if (signedIn) { pullAll(); }
+        }
+
+        signinBtn.disabled = false;
+        signinBtn.textContent = 'Sign in';
+
+        signinBtn.onclick = async () => {
+          const email = prompt("Enter your email for a sign-in link:");
+          if (!email) return;
+          const { error } = await client.auth.signInWithOtp({
+            email,
+            options: { emailRedirectTo: location.href }
+          });
+          if (error) alert(error.message);
+          else alert("Check your email and click the sign-in link.");
+        };
+
+        signoutBtn.onclick = async () => {
+          await client.auth.signOut();
+          refreshButtons();
+        };
+
+        client.auth.onAuthStateChange(() => refreshButtons());
+        refreshButtons();
+
+        // ---- your existing helpers (unchanged) ----
+        function getState() {
+          try { return JSON.parse(localStorage.getItem("scripture_srs_v1")) || { cards:[], settings:{} }; }
+          catch { return { cards:[], settings:{} }; }
+        }
+        function setCardsLocal(cards) {
+          const st = getState(); st.cards = cards;
+          localStorage.setItem("scripture_srs_v1", JSON.stringify(st));
+          location.reload();
+        }
+        function setSettingsLocal(settings) {
+          const st = getState(); st.settings = settings;
+          localStorage.setItem("scripture_srs_v1", JSON.stringify(st));
+        }
+
+        async function pullAll() {
+          const { data: user } = await client.auth.getUser();
+          if (!user?.user) return;
+          const uid = user.user.id;
+
+          const { data: rows } = await client.from('cards').select('*').eq('user_id', uid);
+          const pulledCards = (rows||[]).map(r => ({
+            id: r.id, ref: r.ref, text: r.text, pack: r.pack,
+            contentHash: r.content_hash, box: r.box, nextDue: r.next_due,
+            createdAt: new Date(r.created_at).getTime(), updatedAt: new Date(r.updated_at).getTime(),
+            deletedAt: r.deleted_at ? new Date(r.deleted_at).getTime() : null,
+          }));
+          const local = getState().cards || [];
+          const map = new Map(local.map(c => [c.id, c]));
+          for (const r of pulledCards) {
+            const l = map.get(r.id);
+            if (!l || r.updatedAt > (l.updatedAt || 0)) map.set(r.id, r);
           }
-        
-          if (document.readyState === 'loading') {
-            document.addEventListener('DOMContentLoaded', startWhenReady);
-          } else {
-            startWhenReady();
+          setCardsLocal(Array.from(map.values()).filter(c => !c.deletedAt));
+
+          const { data: s } = await client.from('settings').select('*').eq('user_id', uid).maybeSingle();
+          if (s) setSettingsLocal({
+            sessionTarget: s.session_target, mode: s.mode,
+            showFirstNWords: s.show_first_n_words, shuffle: s.shuffle,
+          });
+        }
+
+        window.pushSRS = async function pushAll() {
+          const { data: user } = await client.auth.getUser();
+          if (!user?.user) { alert("Sign in first."); return; }
+          const uid = user.user.id;
+
+          const { cards, settings } = getState();
+          if (cards?.length) {
+            const rows = cards.map(c => ({
+              id: c.id || crypto.randomUUID(),
+              user_id: uid,
+              ref: c.ref, text: c.text, pack: c.pack,
+              content_hash: (c.contentHash || (function(s){let h=2166136261>>>0;for(let i=0;i<s.length;i++){h^=s.charCodeAt(i);h=Math.imul(h,16777619)}return (h>>>0).toString(36)})(`${c.ref}|${c.text}`)),
+              box: c.box||1, next_due: c.nextDue||0,
+              created_at: new Date(c.createdAt||Date.now()).toISOString(),
+              updated_at: new Date(c.updatedAt||Date.now()).toISOString(),
+              deleted_at: c.deletedAt ? new Date(c.deletedAt).toISOString() : null,
+            }));
+            await client.from('cards').upsert(rows, { onConflict: 'id' });
           }
-        })();
-    </script>        
+          await client.from('settings').upsert({
+            user_id: uid,
+            session_target: settings?.sessionTarget ?? 50,
+            mode: settings?.mode ?? 'recognition',
+            show_first_n_words: settings?.showFirstNWords ?? 6,
+            shuffle: settings?.shuffle ?? true,
+            updated_at: new Date().toISOString(),
+          });
+          alert("Pushed local data to cloud.");
+        };
+
+        const pushBtn = document.createElement('button');
+        pushBtn.textContent = 'Push to Cloud';
+        pushBtn.className = 'fixed bottom-4 right-4 px-4 py-2 rounded-xl bg-emerald-600 text-white shadow';
+        pushBtn.onclick = () => window.pushSRS();
+        document.body.appendChild(pushBtn);
+      }
+
+      function boot() {
+        if (document.readyState === 'loading') {
+          document.addEventListener('DOMContentLoaded', () => ready(start));
+        } else {
+          ready(start);
+        }
+      }
+      boot();
+    })();
+    </script>
+   
   </body>
 </html>
 <!-- bump -->
