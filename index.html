@@ -328,7 +328,25 @@
           // Mark pushing
           window.srsSync.pushing = true; emitSync();
           window._pushing = true;
+
+          // helper: batch an array into chunks
+          const chunk = (arr, size) => {
+            const out = [];
+            for (let i = 0; i < arr.length; i += size) out.push(arr.slice(i, i + size));
+            return out;
+          };
+
+          // helper: stringify a supabase error safely
+          const showErr = (err, ctx = "") => {
+            console.error("Push error", ctx, err);
+            const msg = (err && (err.message || err.error_description || err.hint)) || String(err);
+            alert(`${ctx ? ctx + ": " : ""}${msg}`.slice(0, 500));
+          };
+
           try {
+            const client = window.supabaseClient;
+            if (!client) { alert("Sign in first."); return; }
+
             const { data: user } = await client.auth.getUser();
             if (!user?.user) { alert("Sign in first."); return; }
             const uid = user.user.id;
@@ -336,62 +354,71 @@
             const { cards, settings, history } = getState();
             const nowIso = new Date().toISOString();
 
-            // --- CARDS UPSERT ---
+            // --------- CARDS (BATCHED UPSERT) ----------
             if (cards?.length) {
               const rows = cards.map(c => {
-              const slow = c?.srs?.slow || {};
-              const fast = c?.srs?.fast || {};
-              const content_hash = (c.contentHash || (function(s){
-                let h=2166136261>>>0;
-                for(let i=0;i<s.length;i++){h^=s.charCodeAt(i);h=Math.imul(h,16777619)}
-                return (h>>>0).toString(36)
-              })(`${c.ref}|${c.text}`));
+                const slow = c?.srs?.slow || {};
+                const fast = c?.srs?.fast || {};
+                const content_hash = (c.contentHash || (function(s){
+                  let h=2166136261>>>0;
+                  for(let i=0;i<s.length;i++){h^=s.charCodeAt(i);h=Math.imul(h,16777619)}
+                  return (h>>>0).toString(36)
+                })(`${c.ref}|${c.text}`));
 
-              return {
-                id: c.id || crypto.randomUUID(),
-                user_id: uid,
-                ref: c.ref, text: c.text, pack: c.pack,
-                content_hash,
+                return {
+                  id: c.id || crypto.randomUUID(),
+                  user_id: uid,
+                  ref: c.ref, text: c.text, pack: c.pack,
+                  content_hash,
 
-                // dual schedule fields
-                srs_slow_bucket: slow.bucket || '0D',
-                srs_slow_next_due: Number(slow.nextDue || 0),
-                srs_slow_updated_at: slow.updatedAt ? new Date(slow.updatedAt).toISOString() : nowIso,
+                  srs_slow_bucket: slow.bucket || '0D',
+                  srs_slow_next_due: Number(slow.nextDue || 0),
+                  srs_slow_updated_at: slow.updatedAt ? new Date(slow.updatedAt).toISOString() : nowIso,
 
-                srs_fast_bucket: fast.bucket || (slow.bucket || '0D'),
-                srs_fast_next_due: Number(fast.nextDue || slow.nextDue || 0),
-                srs_fast_updated_at: fast.updatedAt
-                    ? new Date(fast.updatedAt).toISOString()
-                    : (slow.updatedAt ? new Date(slow.updatedAt).toISOString() : nowIso),
+                  srs_fast_bucket: fast.bucket || (slow.bucket || '0D'),
+                  srs_fast_next_due: Number(fast.nextDue || slow.nextDue || 0),
+                  srs_fast_updated_at: fast.updatedAt
+                      ? new Date(fast.updatedAt).toISOString()
+                      : (slow.updatedAt ? new Date(slow.updatedAt).toISOString() : nowIso),
 
-                order_in_pack: c.order || null,
+                  order_in_pack: c.order || null,
 
-                created_at: c.createdAt ? new Date(c.createdAt).toISOString() : nowIso,
-                updated_at: c.updatedAt ? new Date(c.updatedAt).toISOString() : nowIso,
-                deleted_at: c.deletedAt ? new Date(c.deletedAt).toISOString() : null,
-              };
+                  created_at: c.createdAt ? new Date(c.createdAt).toISOString() : nowIso,
+                  updated_at: c.updatedAt ? new Date(c.updatedAt).toISOString() : nowIso,
+                  deleted_at: c.deletedAt ? new Date(c.deletedAt).toISOString() : null,
+                };
               });
 
-              const { error } = await client.from('cards').upsert(rows, { onConflict: 'id' });
-              if (error) { console.error(error); alert("Cards push failed."); return; }
+              // Batch at 200 rows to avoid payload/timeouts
+              for (const part of chunk(rows, 200)) {
+                const { error } = await client.from('cards').upsert(part, { onConflict: 'id' });
+                if (error) {
+                  // If you ever see a unique violation on (user_id, content_hash), it means
+                  // you have two different card IDs with identical ref|text. Merge or delete duplicates.
+                  return showErr(error, "Cards push failed");
+                }
+              }
             }
 
-            // --- SETTINGS UPSERT ---
-            await client.from('settings').upsert({
-              user_id: uid,
-              session_target: settings?.sessionTarget ?? 50,
-              mode: settings?.mode ?? 'recognition',
-              show_first_n_words: settings?.showFirstNWords ?? 6,
-              shuffle: settings?.shuffle ?? true,
-              daily_cap_slow: settings?.dailyCapSlow ?? 60,
-              daily_cap_fast: settings?.dailyCapFast ?? 200,
-              jitter_pct: settings?.jitterPct ?? 0.1,
-              schema_version: settings?.schemaVersion ?? 1,
-              updated_at: nowIso,
-            });
+            // --------- SETTINGS (single-row upsert) ----------
+            {
+              const { error } = await client.from('settings').upsert({
+                user_id: uid,
+                session_target: settings?.sessionTarget ?? 50,
+                mode: settings?.mode ?? 'recognition',
+                show_first_n_words: settings?.showFirstNWords ?? 6,
+                shuffle: settings?.shuffle ?? true,
+                daily_cap_slow: settings?.dailyCapSlow ?? 60,
+                daily_cap_fast: settings?.dailyCapFast ?? 200,
+                jitter_pct: settings?.jitterPct ?? 0.1,
+                schema_version: settings?.schemaVersion ?? 1,
+                updated_at: nowIso,
+              });
+              if (error) return showErr(error, "Settings push failed");
+            }
 
-            // --- HISTORY APPEND (optional but recommended) ---
-            const recent = Array.isArray(history) ? history.slice(-500) : [];
+            // --------- HISTORY (BATCHED UPSERT) ----------
+            const recent = Array.isArray(history) ? history.slice(-2000) : [];
             if (recent.length) {
               const rows = recent.map(h => ({
                 id: h.id || crypto.randomUUID(),
@@ -404,32 +431,16 @@
                 to_bucket: h.toBucket,
                 ts: h.ts ? new Date(h.ts).toISOString() : nowIso,
               }));
-              const { error } = await client.from('history').upsert(rows, { onConflict: 'id' });
-              if (error) { console.error(error); /* do not block the rest */ }
-            }
 
-            // --- GOAL CAPS UPSERT ---
-            const capLog = (getState().capLog) || {};
-            const capEntries = Object.entries(capLog);
-            if (capEntries.length) {
-              const rows = capEntries.map(([dayKey, v]) => ({
-                user_id: uid,
-                day: dayKey,              // YYYY-MM-DD
-                cap_slow: Number(v?.slow ?? 0),
-                cap_fast: Number(v?.fast ?? 0),
-                updated_at: nowIso,
-              }));
-              const { error: egc } = await client
-                .from('goal_caps')
-                .upsert(rows, { onConflict: 'user_id,day' });
-              if (egc) { console.error('goal_caps push failed', egc); /* non-fatal */ }
+              for (const part of chunk(rows, 500)) {
+                const { error } = await client.from('history').upsert(part, { onConflict: 'id' });
+                if (error) return showErr(error, "History push failed");
+              }
             }
-
           } catch (err) {
-            console.error('pushAll failed:', err);
+            showErr(err, "Push failed");
           } finally {
             window._pushing = false;
-            // Done pushing
             window.srsSync.pushing = false;
             window.srsSync.lastPushAt = Date.now();
             emitSync();
