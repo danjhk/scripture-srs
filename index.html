@@ -75,9 +75,13 @@
         signinBtn.onclick = async () => {
           const email = prompt("Enter your email for a sign-in link:");
           if (!email) return;
+
+          // redirect to THIS page exactly (origin + path), no query string
+          const redirectTo = `${location.origin}${location.pathname}`;
+
           const { error } = await client.auth.signInWithOtp({
             email,
-            options: { emailRedirectTo: location.href }
+            options: { emailRedirectTo: redirectTo }
           });
           if (error) alert(error.message);
           else alert("Check your email and click the sign-in link.");
@@ -88,7 +92,13 @@
           refreshButtons();
         };
 
-        client.auth.onAuthStateChange(() => refreshButtons());
+        client.auth.onAuthStateChange((event, session) => {
+          console.log('Auth event:', event, session?.user?.email || null);
+          refreshButtons();
+        });
+        if (location.hash && location.hash.includes('access_token')) {
+          history.replaceState({}, '', location.pathname); // remove token hash from URL
+        }
         refreshButtons();
 
         // ---- your existing helpers (unchanged) ----
