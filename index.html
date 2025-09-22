@@ -202,14 +202,19 @@
             deletedAt: r.deleted_at ? new Date(r.deleted_at).getTime() : null,
           }));
 
-          // Merge with local (prefer fresher updatedAt)
+          // Merge with local, but treat "missing on server" as deleted.
+          // Keep whichever copy (local vs remote) is fresher *only for ids the server still has*.
           const local = getState().cards || [];
-          const map = new Map(local.map(c => [c.id, c]));
+          const localById = new Map(local.map(c => [c.id, c]));
+
+          const merged = [];
           for (const r of pulledCards) {
-            const l = map.get(r.id);
-            if (!l || r.updatedAt > (l.updatedAt || 0)) map.set(r.id, r);
+            const l = localById.get(r.id);
+            // If no local or remote is fresher/equal, use remote; otherwise keep local
+            merged.push(!l || r.updatedAt >= (l.updatedAt || 0) ? r : l);
           }
-          setCardsLocal(Array.from(map.values()).filter(c => !c.deletedAt));
+          // Anything in local that's not on the server is considered deleted → drop it.
+          setCardsLocal(merged.filter(c => !c.deletedAt));
 
           // --- SETTINGS ---
           const { data: s, error: e2 } = await client
@@ -274,7 +279,7 @@
             console.error('pullAll failed:', err);
           } finally {
             // Release the guard after a tick so app can apply state without triggering push
-            setTimeout(() => { window._syncFromCloud = false; }, 50);
+            setTimeout(() => { window._syncFromCloud = false; }, 150);
             // Done pulling
             window.srsSync.pulling = false;
             window.srsSync.lastPullAt = Date.now();
@@ -390,19 +395,28 @@
         document.body.appendChild(pushBtn);
 
         async function startRealtime(uid) {
+          const schedulePull = (function () {
+            let t = null;
+            return () => {
+              if (window._pushing) return;
+              clearTimeout(t);
+              t = setTimeout(() => pullAll(), 250); // batch events
+            };
+          })();
+
           // Unsubscribe existing
           if (channel) { try { await client.removeChannel(channel); } catch {} channel = null; }
           // Subscribe to user-scoped changes
           channel = client.channel('realtime:cards_settings_history')
             .on('postgres_changes',
               { event: '*', schema: 'public', table: 'cards', filter: `user_id=eq.${uid}` },
-              () => { if (!window._pushing) pullAll(); })
+              () => schedulePull())
             .on('postgres_changes',
               { event: '*', schema: 'public', table: 'settings', filter: `user_id=eq.${uid}` },
-              () => { if (!window._pushing) pullAll(); })
+              () => schedulePull())
             .on('postgres_changes',
               { event: '*', schema: 'public', table: 'history', filter: `user_id=eq.${uid}` },
-              () => { if (!window._pushing) pullAll(); })
+              () => schedulePull())
             .subscribe((status) => { console.log('Realtime status:', status); });
 
 

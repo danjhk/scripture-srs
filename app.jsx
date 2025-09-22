@@ -269,7 +269,7 @@ function defaultSettings() {
     sessionTarget: 50,
     mode: "recognition",
     showFirstNWords: 6,
-    shuffle: true,
+    shuffle: false,
     dailyCapSlow: 60, // max slow reviews per day
     dailyCapFast: 200, // max fast reviews per day
     jitterPct: 0.1, // used by fixed scheduler
@@ -398,15 +398,39 @@ function App() {
   const dueCards = useMemo(() => {
     const t = now();
     const key = settings.mode === "recognition" ? "fast" : "slow";
+
+    // 1) due filter
     let list = cards.filter((c) => {
       const nd = c?.srs?.[key]?.nextDue ?? 0;
       return nd <= t;
     });
-    if (filterPack !== "ALL") list = list.filter((c) => c.pack === filterPack);
-    if (settings.shuffle && sessionQueue.length === 0) list = shuffle([...list]);
+
+    // 2) optional pack filter
+    if (filterPack !== "ALL") {
+      list = list.filter((c) => c.pack === filterPack);
+    }
+
+    // 3) deterministic ordering:
+    //    - when ALL: by pack A→Z, then order 1→N, then ref
+    //    - when single pack: order 1→N, then ref
+    list.sort((a, b) => {
+      if (filterPack === "ALL" && a.pack !== b.pack) {
+        return String(a.pack).localeCompare(String(b.pack));
+      }
+      const ao = a.order ?? Number.POSITIVE_INFINITY;
+      const bo = b.order ?? Number.POSITIVE_INFINITY;
+      if (ao !== bo) return ao - bo;
+      // very stable fallback to keep ties consistent
+      const ar = String(a.ref || "");
+      const br = String(b.ref || "");
+      if (ar !== br) return ar.localeCompare(br);
+      return String(a.id).localeCompare(String(b.id));
+    });
+
     const remain = Math.max(0, dailyRemaining(settings.mode));
     return list.slice(0, remain);
-  }, [cards, filterPack, settings.shuffle, settings.mode, daily]);
+  }, [cards, filterPack, settings.mode, daily]);
+
 
   // If manual queue is active, pull from it; else, use dueCards
   const currentCard = useMemo(() => {
@@ -417,13 +441,6 @@ function App() {
     return dueCards[0];
   }, [sessionQueue, cards, dueCards]);
 
-  function shuffle(arr) {
-    for (let i = arr.length - 1; i > 0; i--) {
-      const j = Math.floor(Math.random() * (i + 1));
-      [arr[i], arr[j]] = [arr[j], arr[i]];
-    }
-    return arr;
-  }
   async function startSession() {
     try {
       // If signed in and pull is available, refresh first.
