@@ -96,10 +96,6 @@ function parseLineToCard(line, fileName) {
 
 function saveState(state) {
   localStorage.setItem(LS_KEY, JSON.stringify(state));
-  // If we’re not currently applying a cloud pull, schedule a push
-  if (!window._syncFromCloud && typeof window.schedulePush === 'function') {
-    window.schedulePush();
-  }
 }
 function loadState() {
   const raw = localStorage.getItem(LS_KEY);
@@ -424,6 +420,8 @@ function App() {
       };
       // Avoid churn if nothing changed
       if (existing.slow === next[key].slow && existing.fast === next[key].fast) return prev;
+      // Only mark dirty when the snapshot for today actually changes
+      window.markDirty?.('capLog');
       return next;
     });
   }, [settings.dailyCapSlow, settings.dailyCapFast, daily.key]); // update if new day or caps changed
@@ -540,6 +538,8 @@ function App() {
         ts: now(),
       },
     ]);
+    // Durable: cards + history changed
+    window.markDirty?.('cards', 'history');
 
     // If manual queue is active, pop the current id
     setSessionQueue((q) => (q.length && q[0] === currentCard.id ? q.slice(1) : q));
@@ -554,9 +554,18 @@ function App() {
     for (const f of files) {
       const text = await f.text();
       const lines = text.split(/\r?\n/);
+      // Ensure strict, stable ordering inside this file:
+      // give each createdAt/updatedAt a unique, increasing tick.
+      let seq = 0;
+      const base = Date.now();
       for (const line of lines) {
         const card = parseLineToCard(line, f.name);
-        if (card) imported.push(migrateCardSRS(card));
+        if (!card) continue;
+        seq += 1;
+        const t = base + seq; // strictly increasing per file
+        card.createdAt = t;
+        card.updatedAt = t;
+        imported.push(migrateCardSRS(card));
       }
     }
 
@@ -568,6 +577,7 @@ function App() {
     const withOrder = assignOrdersByPack(merged);
 
     setCards(withOrder);
+    window.markDirty?.('cards');
     alert(`Imported ${fresh.length} new cards from ${files.length} file(s).`);
   }
 
@@ -610,6 +620,7 @@ function App() {
       updatedAt: now(),
     };
     setCards((prev) => prev.map((c) => (c.id === currentCard.id ? updated : c)));
+    window.markDirty?.('cards');
   }
 
   // minutes with one decimal
@@ -749,9 +760,10 @@ function App() {
                 type="number"
                 min={0}
                 value={settings.dailyCapSlow}
-                onChange={(e) =>
-                  setSettings({ ...settings, dailyCapSlow: Math.max(0, Number(e.target.value || 0)) })
-                }
+                onChange={(e) => {
+                  setSettings({ ...settings, dailyCapSlow: Math.max(0, Number(e.target.value || 0)) });
+                  window.markDirty?.('settings');
+                }}
               />
             </div>
 
@@ -762,9 +774,10 @@ function App() {
                 type="number"
                 min={0}
                 value={settings.dailyCapFast}
-                onChange={(e) =>
-                  setSettings({ ...settings, dailyCapFast: Math.max(0, Number(e.target.value || 0)) })
-                }
+                onChange={(e) => {
+                  setSettings({ ...settings, dailyCapFast: Math.max(0, Number(e.target.value || 0)) });
+                  window.markDirty?.('settings');
+                }}
               />
             </div>
           </div>
@@ -1313,8 +1326,8 @@ function VersesView({
     // Sort by pack order then ref for stability
     return arr.sort((a, b) => {
       if (a.pack !== b.pack) return a.pack.localeCompare(b.pack);
-      const ao = a.order ?? 1,
-        bo = b.order ?? 1;
+      const ao = a.order ?? Number.POSITIVE_INFINITY,
+            bo = b.order ?? Number.POSITIVE_INFINITY;
       if (ao !== bo) return ao - bo;
       return String(a.ref).localeCompare(String(b.ref));
     });

@@ -79,8 +79,18 @@
         window._pushing = false;        // guard: we're currently pushing
         window._syncFromCloud = false;  // guard: we're applying pull → don't auto-push
 
-        const debounce = (fn, ms = 2000) => {
+        const debounce = (fn, ms = 4000) => {
           let t; return (...args) => { clearTimeout(t); t = setTimeout(() => fn(...args), ms); };
+        };
+
+        // Track which entities really changed since last push
+        window._dirty = { cards:false, settings:false, history:false, capLog:false };
+        window.markDirty = (...keys) => {
+          for (const k of keys) if (k in window._dirty) window._dirty[k] = true;
+          // schedule a batched push soon (but NOT on every keystroke thanks to debounce)
+          if (!window._syncFromCloud && typeof window.schedulePush === 'function') {
+            window.schedulePush();
+          }
         };
 
         const cleanupHash = () => {
@@ -323,6 +333,20 @@
         // Expose a debounced scheduler for auto-push (used by app.jsx)
         window.schedulePush = debounce(() => window.pushSRS?.(), 1500);
 
+        // Try to flush before tab closes or app backgrounds (mobile)
+        function flushNow() {
+          if (window._pushing) return;
+          // Only push if something is dirty
+          const d = window._dirty || {};
+          if (!d.cards && !d.settings && !d.history && !d.capLog) return;
+          // Best-effort: fire and forget
+          window.pushSRS?.();
+        }
+        window.addEventListener('visibilitychange', () => {
+          if (document.visibilityState === 'hidden') flushNow();
+        });
+        window.addEventListener('pagehide', flushNow);
+
         // Expose push function (guarded)
         window.pushSRS = async function pushAll() {
           // Mark pushing
@@ -355,7 +379,7 @@
             const nowIso = new Date().toISOString();
 
             // --------- CARDS (BATCHED UPSERT) ----------
-            if (cards?.length) {
+            if (window._dirty.cards && cards?.length) {
               const rows = cards.map(c => {
                 const slow = c?.srs?.slow || {};
                 const fast = c?.srs?.fast || {};
@@ -401,11 +425,10 @@
             }
 
             // --------- SETTINGS (single-row upsert) ----------
-            {
+            if (window._dirty.settings) {
               const { error } = await client.from('settings').upsert({
                 user_id: uid,
                 session_target: settings?.sessionTarget ?? 50,
-                mode: settings?.mode ?? 'recognition',
                 show_first_n_words: settings?.showFirstNWords ?? 6,
                 shuffle: settings?.shuffle ?? true,
                 daily_cap_slow: settings?.dailyCapSlow ?? 60,
@@ -419,7 +442,7 @@
 
             // --------- HISTORY (BATCHED UPSERT) ----------
             const recent = Array.isArray(history) ? history.slice(-2000) : [];
-            if (recent.length) {
+            if (window._dirty.history && recent.length) {
               // Build a set of valid card ids (after we upserted cards above)
               const validCardIds = new Set((cards || []).map(c => c.id));
 
@@ -443,7 +466,7 @@
             }
 
             // --------- GOAL CAPS (BATCHED UPSERT) ----------
-            {
+            if (window._dirty.capLog) {
               const { capLog } = getState();
               const entries = Object.entries(capLog || {});
               if (entries.length) {
@@ -470,6 +493,10 @@
           } catch (err) {
             showErr(err, "Push failed");
           } finally {
+            // If we didn't error, clear dirty flags
+            if (!window.srsSync.pushing) {
+              window._dirty = { cards:false, settings:false, history:false, capLog:false };
+            }
             window._pushing = false;
             window.srsSync.pushing = false;
             window.srsSync.lastPushAt = Date.now();
@@ -478,10 +505,19 @@
         };
 
         const pushBtn = document.createElement('button');
-        pushBtn.textContent = 'Push to Cloud';
-        pushBtn.className = 'fixed bottom-4 right-4 px-4 py-2 rounded-xl bg-emerald-600 text-white shadow';
+        function refreshPushBtn() {
+          const d = window._dirty || {};
+          const dirty = d.cards || d.settings || d.history || d.capLog;
+          pushBtn.textContent = dirty ? 'Push to Cloud' : 'Synced';
+          pushBtn.disabled = !dirty;
+          pushBtn.className =
+            'fixed bottom-4 right-4 px-4 py-2 rounded-xl shadow ' +
+            (dirty ? 'bg-emerald-600 text-white' : 'bg-gray-200 text-gray-500');
+        }
+        refreshPushBtn();
         pushBtn.onclick = () => window.pushSRS();
         document.body.appendChild(pushBtn);
+        window.addEventListener('srs-sync', refreshPushBtn);
 
         async function startRealtime(uid) {
           const schedulePull = (function () {
@@ -501,20 +537,13 @@
               { event: '*', schema: 'public', table: 'cards', filter: `user_id=eq.${uid}` },
               () => schedulePull())
             .on('postgres_changes',
-              { event: '*', schema: 'public', table: 'settings', filter: `user_id=eq.${uid}` },
-              () => schedulePull())
-            .on('postgres_changes',
               { event: '*', schema: 'public', table: 'history', filter: `user_id=eq.${uid}` },
-              () => schedulePull())
-            .on('postgres_changes',
-              { event: '*', schema: 'public', table: 'goal_caps', filter: `user_id=eq.${uid}` },
               () => schedulePull())
             .subscribe((status) => { console.log('Realtime status:', status); });
 
-
           // Poll as a safety net (missed events / offline resume)
           if (poller) clearInterval(poller);
-          poller = setInterval(() => { if (!window._pushing) pullAll(); }, 60000);
+          poller = setInterval(() => { if (!window._pushing) pullAll(); }, 180000); // 3 min
         }
 
         async function stopRealtime() {
