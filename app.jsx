@@ -631,29 +631,29 @@ function App() {
   return (
     <div className="min-h-screen bg-gray-50 p-4 pb-28 sm:pb-4">
       <div className="max-w-3xl mx-auto space-y-4">
-        <header className="flex items-center justify-between">
+        <header className="flex flex-wrap items-center gap-2 sm:justify-between">
           <h1 className="text-2xl font-bold">Scripture SRS</h1>
-          <div className="flex items-center gap-2">
+          <div className="flex flex-wrap items-center gap-2 w-full sm:w-auto">
             <button
-              className="px-3 py-2 rounded-xl bg-gray-200"
+              className="px-3 py-2 rounded-xl bg-gray-200 shrink-0"
               onClick={() => setPackManagerOpen(true)}
             >
               Manage Packs
             </button>
             <button
-              className="px-3 py-2 rounded-xl bg-gray-200"
+              className="px-3 py-2 rounded-xl bg-gray-200 shrink-0"
               onClick={() => window.pullSRS ? window.pullSRS() : alert('Sign in first (top-right)')}
             >
               Pull from Cloud
             </button>
             <button
-              className="px-3 py-2 rounded-xl bg-gray-200"
+              className="px-3 py-2 rounded-xl bg-gray-200 shrink-0"
               onClick={() => window.pushSRS ? window.pushSRS() : alert('Sign in first (top-right)')}
             >
               Push to Cloud
             </button>
 
-            <div className="text-sm text-gray-600">
+            <div className="text-sm text-gray-600 min-w-0">
               Due: {dueCards.length} | Done: {completed} | {sessionElapsedMin}m
             </div>
             {/* Sync status chip */}
@@ -661,6 +661,7 @@ function App() {
               className={
                 "text-xs px-2 py-1 rounded-full " +
                 (sync.pushing || sync.pulling ? "bg-amber-100 text-amber-800" : "bg-gray-100 text-gray-700")
+              + " shrink-0"
               }
               title={`Last pull: ${fmtTime(sync.lastPullAt)} · Last push: ${fmtTime(sync.lastPushAt)}`}
             >
@@ -680,13 +681,21 @@ function App() {
 
         {/* Import / Export */}
         <section className="grid gap-3 sm:grid-cols-2">
-          <div className="rounded-2xl shadow p-4 bg-white">
+          <div className="rounded-2xl shadow p-4 bg-white space-y-2">
             <h2 className="font-semibold mb-2">Import TXT Packs</h2>
+            {/* Button triggers hidden input to avoid iOS file input overflow */}
+            <button
+              className="px-3 py-2 rounded-xl bg-gray-900 text-white w-full sm:w-auto"
+              onClick={() => fileInputRef.current?.click()}
+            >
+              Select .txt files
+            </button>
             <input
               ref={fileInputRef}
               type="file"
               multiple
-              accept=".txt"
+              accept=".txt,text/plain"
+              className="hidden"
               onChange={(e) =>
                 e.target.files && importTxtFiles(Array.from(e.target.files))
               }
@@ -697,14 +706,14 @@ function App() {
           </div>
           <div className="rounded-2xl shadow p-4 bg-white space-y-2">
             <h2 className="font-semibold">Backup / Restore</h2>
-            <div className="flex gap-2">
+            <div className="flex flex-wrap gap-2">
               <button
-                className="px-3 py-2 rounded-xl bg-gray-900 text-white"
+                className="px-3 py-2 rounded-xl bg-gray-900 text-white w-full sm:w-auto"
                 onClick={exportJson}
               >
                 Export JSON
               </button>
-              <label className="px-3 py-2 rounded-xl bg-gray-200 cursor-pointer">
+              <label className="px-3 py-2 rounded-xl bg-gray-200 cursor-pointer w-full sm:w-auto text-center inline-flex justify-center">
                 Import JSON
                 <input
                   type="file"
