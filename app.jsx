@@ -668,10 +668,15 @@ function App() {
               return (
                 <button
                   onClick={() => setSyncOpen(true)}
-                  className={`text-xs px-2 py-1 rounded-full ${color} shrink-0 cursor-pointer`}
+                  className={`relative text-xs px-2 py-1 rounded-full ${color} shrink-0 cursor-pointer whitespace-nowrap`}
                   title={`Status • Last pull: ${fmtTime(sync.lastPullAt)} • Last push: ${fmtTime(sync.lastPushAt)}`}
                 >
-                  {label}
+                  {/* Ghost string reserves width for the longest label */}
+                  <span className="invisible block">Syncing…</span>
+                  {/* Actual label sits on top */}
+                  <span className="absolute inset-0 flex items-center justify-center">
+                    {label}
+                  </span>
                 </button>
               );
             })()}
