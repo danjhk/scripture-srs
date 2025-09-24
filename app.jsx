@@ -413,6 +413,7 @@ function lcsMatchMask(aKeys, bKeys) {
 }
 
 // Main diff that returns runs over TYPED RAW string only
+// Main diff that returns runs over TYPED RAW string only
 function diffCharsLCS(typedRaw, targetRaw, opts = defaultWritingOptions()) {
   const T = normalizeForCompare(typedRaw, opts);
   const G = normalizeForCompare(targetRaw, opts);
@@ -421,9 +422,10 @@ function diffCharsLCS(typedRaw, targetRaw, opts = defaultWritingOptions()) {
   let exact = false;
   if (T.keys.length === G.keys.length) {
     exact = true;
-    for (let k=0;k<T.keys.length;k++) if (T.keys[k] !== G.keys[k]) { exact = false; break; }
+    for (let k = 0; k < T.keys.length; k++) if (T.keys[k] !== G.keys[k]) { exact = false; break; }
   }
 
+  // LCS mask for the typed units
   const mask = lcsMatchMask(T.keys, G.keys);
   const runs = [];
   let pos = 0;
@@ -440,7 +442,27 @@ function diffCharsLCS(typedRaw, targetRaw, opts = defaultWritingOptions()) {
     runs.push({ text: typedRaw.slice(pos), ok: null });
   }
 
-  return { runs, exact };
+  // NEW: detect "missing tail" if user's normalized input is a prefix of the goal
+  let missingTailRaw = "";
+  let missingTailStartRawIndex = null;
+
+  const isPrefix = (() => {
+    if (T.keys.length > G.keys.length) return false;
+    for (let i = 0; i < T.keys.length; i++) {
+      if (T.keys[i] !== G.keys[i]) return false;
+    }
+    return true;
+  })();
+
+  if (isPrefix && T.keys.length < G.keys.length) {
+    const nextUnit = G.units[T.keys.length]; // first goal unit not covered by the typed prefix
+    if (nextUnit) {
+      missingTailStartRawIndex = nextUnit.rawStart;
+      missingTailRaw = targetRaw.slice(missingTailStartRawIndex);
+    }
+  }
+
+  return { runs, exact, missingTailRaw, missingTailStartRawIndex };
 }
 
 /* =========================
@@ -1139,7 +1161,8 @@ function HintToggle({ text, words }) {
 function WritingCard({ card, opts, onSubmit, onSkip }) {
   const [value, setValue] = useState("");
   const [composing, setComposing] = useState(false);
-  const [feedback, setFeedback] = useState(null); // { runs, exact }
+  const [feedback, setFeedback] = useState(null); // { runs, exact, missingTailRaw, missingTailStartRawIndex }
+  const [view, setView] = useState("typed"); // "typed" | "actual"
   const taRef = useRef(null);
 
   // Auto-grow textarea
@@ -1154,18 +1177,83 @@ function WritingCard({ card, opts, onSubmit, onSkip }) {
   useEffect(() => {
     setValue("");
     setFeedback(null);
+    setView("typed");
   }, [card.id]);
 
   function handleSubmit() {
     if (composing) return;
     const diff = diffCharsLCS(value, card.text, opts);
     setFeedback(diff);
+    setView("typed");
     onSubmit?.();
+  }
+
+  // Helper: render the user's typing with green/red highlights + optional missing tail
+  function TypingPanel() {
+    return (
+      <div className="rounded-xl border p-3 bg-gray-50">
+        <div className="font-mono whitespace-pre-wrap leading-6 break-words">
+          {feedback.runs.map((r, i) =>
+            r.ok === true ? (
+              <span key={i} className="bg-emerald-200 text-emerald-900 rounded-sm">{r.text}</span>
+            ) : r.ok === false ? (
+              <span key={i} className="bg-rose-200 text-rose-900 rounded-sm">{r.text}</span>
+            ) : (
+              <span key={i}>{r.text}</span> // neutral
+            )
+          )}
+          {/* NEW: show any missing tail inline, clearly marked */}
+          {feedback.missingTailRaw ? (
+            <>
+              {" "}
+              <span className="bg-rose-200 text-rose-900 rounded-sm">
+                {feedback.missingTailRaw}
+              </span>
+            </>
+          ) : null}
+        </div>
+        {!feedback.exact && (
+          <div className="mt-2 text-xs text-gray-500">
+            Green = correct, Red = incorrect. Red at the end indicates you stopped early.
+          </div>
+        )}
+        {feedback.exact && (
+          <div className="mt-2 text-xs text-emerald-700">Perfect match after normalization.</div>
+        )}
+      </div>
+    );
+  }
+
+  // Helper: render the actual verse; if the user stopped early, highlight the missed tail in red
+  function ActualPanel() {
+    if (!feedback?.missingTailRaw || feedback.missingTailStartRawIndex == null) {
+      return (
+        <div className="rounded-xl border p-3 bg-gray-50">
+          <div className="font-mono whitespace-pre-wrap leading-6 break-words">
+            {card.text}
+          </div>
+        </div>
+      );
+    }
+    const start = feedback.missingTailStartRawIndex;
+    const head = card.text.slice(0, start);
+    const tail = card.text.slice(start);
+    return (
+      <div className="rounded-xl border p-3 bg-gray-50">
+        <div className="font-mono whitespace-pre-wrap leading-6 break-words">
+          <span>{head}</span>
+          <span className="bg-rose-200 text-rose-900 rounded-sm">{tail}</span>
+        </div>
+        <div className="mt-2 text-xs text-gray-500">
+          Red = words you didn’t type yet.
+        </div>
+      </div>
+    );
   }
 
   return (
     <div className="space-y-3">
-      {/* Big writing box */}
+      {/* Big writing box (hidden after submit) */}
       {!feedback && (
         <>
           <textarea
@@ -1175,7 +1263,7 @@ function WritingCard({ card, opts, onSubmit, onSkip }) {
             value={value}
             onChange={(e) => setValue(e.target.value)}
             onCompositionStart={() => setComposing(true)}
-            onCompositionEnd={(e) => { setComposing(false); /* allow final char */ setValue(v => v); }}
+            onCompositionEnd={() => setComposing(false)}
           />
           <div className="flex gap-2">
             <button
@@ -1191,27 +1279,31 @@ function WritingCard({ card, opts, onSubmit, onSkip }) {
         </>
       )}
 
-      {/* Feedback panel */}
+      {/* Feedback + toggle */}
       {feedback && (
-        <div className="rounded-xl border p-3 bg-gray-50">
-          <div className="font-mono whitespace-pre-wrap leading-6 break-words">
-            {feedback.runs.map((r, i) =>
-              r.ok === true ? (
-                <span key={i} className="bg-emerald-200 text-emerald-900 rounded-sm">{r.text}</span>
-              ) : r.ok === false ? (
-                <span key={i} className="bg-rose-200 text-rose-900 rounded-sm">{r.text}</span>
-              ) : (
-                <span key={i}>{r.text}</span> // neutral (ignored by opts)
-              )
-            )}
+        <>
+          {/* Toggle between views */}
+          <div className="flex gap-2">
+            <button
+              className={`px-3 py-1 rounded-full text-sm ${view === "typed" ? "bg-indigo-600 text-white" : "bg-gray-200"}`}
+              onClick={() => setView("typed")}
+              aria-pressed={view === "typed"}
+              title="Show your typing with highlights"
+            >
+              My typing
+            </button>
+            <button
+              className={`px-3 py-1 rounded-full text-sm ${view === "actual" ? "bg-indigo-600 text-white" : "bg-gray-200"}`}
+              onClick={() => setView("actual")}
+              aria-pressed={view === "actual"}
+              title="Show the actual verse"
+            >
+              Actual verse
+            </button>
           </div>
-          {!feedback.exact && (
-            <div className="mt-2 text-xs text-gray-500">Highlighted against your typed text. Green = correct, Red = incorrect.</div>
-          )}
-          {feedback.exact && (
-            <div className="mt-2 text-xs text-emerald-700">Perfect match after normalization.</div>
-          )}
-        </div>
+
+          {view === "typed" ? <TypingPanel /> : <ActualPanel />}
+        </>
       )}
     </div>
   );
