@@ -191,14 +191,22 @@
             if (!user?.user) return;
             const uid = user.user.id;
 
-            // --- CARDS ---
-            const { data: rows, error: e1 } = await client
-              .from('cards')
-              .select('*')
-              .eq('user_id', uid);
-
-            if (e1) { console.error(e1); return; }
-
+            // --- CARDS (paginate; Supabase/PostgREST defaults to 1k rows) ---
+            const pageSize = 1000;
+            let from = 0;
+            let rows = [];
+            for (;;) {
+              const { data, error } = await client
+                .from('cards')
+                .select('*')
+                .eq('user_id', uid)
+                .order('created_at', { ascending: true })
+                .range(from, from + pageSize - 1);
+              if (error) { console.error(error); return; }
+              rows = rows.concat(data || []);
+              if (!data || data.length < pageSize) break; // last page
+              from += pageSize;
+            }
             const pulledCards = (rows || []).map(r => ({
             id: r.id,
             ref: r.ref,
