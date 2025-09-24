@@ -541,23 +541,6 @@ function App() {
     };
   }, []);
 
-  // Keyboard shortcuts (DISABLE in writing mode)
-  useEffect(() => {
-    function onKey(e) {
-      // ignore when typing in inputs/textareas
-      const tag = (e.target && e.target.tagName) ? e.target.tagName.toLowerCase() : "";
-      if (tag === "input" || tag === "textarea" || e.target.isContentEditable) return;
-      if (settings.mode === "writing") return; // NEW: disable grading shortcuts entirely in writing
-      const lbl = SHORTCUT_MAP[e.key.toLowerCase?.() || e.key];
-      if (!lbl) return;
-      if (!currentCard) return;
-      e.preventDefault();
-      handleGrade(lbl);
-    }
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [currentCard, settings.mode]);
-
   // Keep daily caps snapshot
   useEffect(() => {
     const key = todayKey();
@@ -570,48 +553,10 @@ function App() {
     });
   }, [settings.dailyCapSlow, settings.dailyCapFast, daily.key]);
 
+
   const packs = useMemo(() => ["ALL", ...Array.from(new Set(cards.map((c) => c.pack))).sort()], [cards]);
 
-  // Due list (used by recognition/review)
-  const dueCards = useMemo(() => {
-    const t = now();
-    const key = settings.mode === "recognition" ? "fast" : "slow";
-    let list = cards.filter((c) => (c?.srs?.[key]?.nextDue ?? 0) <= t);
-    if (filterPack !== "ALL") list = list.filter((c) => c.pack === filterPack);
-    list.sort((a, b) => {
-      if (filterPack === "ALL" && a.pack !== b.pack) return String(a.pack).localeCompare(String(b.pack));
-      const ao = a.order ?? Number.POSITIVE_INFINITY, bo = b.order ?? Number.POSITIVE_INFINITY;
-      if (ao !== bo) return ao - bo;
-      const ar = String(a.ref || ""), br = String(b.ref || "");
-      if (ar !== br) return ar.localeCompare(br);
-      return String(a.id).localeCompare(String(b.id));
-    });
-    const remain = Math.max(0, dailyRemaining(settings.mode));
-    return list.slice(0, remain);
-  }, [cards, filterPack, settings.mode, daily]);
-
-  // Current card source:
-  // - Writing: always from sessionQueue
-  // - Others: from sessionQueue if present else dueCards[0]
-  const currentCard = useMemo(() => {
-    if (sessionQueue.length > 0) {
-      const id = sessionQueue[0];
-      return cards.find((c) => c.id === id) || null;
-    }
-    if (settings.mode === "writing") return null; // require Start Session / or manual write selection
-    return dueCards[0];
-  }, [sessionQueue, cards, dueCards, settings.mode]);
-
-  // Reset "submitted" when card/mode changes
-  useEffect(() => { setWritingSubmitted(false); }, [settings.mode, currentCard?.id]);
-
-  function dailyRemaining(mode) {
-    const goal = mode === "recognition" ? todayCaps.fast : todayCaps.slow;
-    const done = mode === "recognition" ? dailyReviewed.fast : dailyReviewed.slow;
-    return Math.max(0, goal - done);
-  }
-
-  // History counts for header
+  // History counts for header (MUST be above dueCards)
   const dailyReviewed = useMemo(() => {
     const tk = todayKey(); let slow = 0, fast = 0;
     for (const h of history) {
@@ -629,6 +574,62 @@ function App() {
     for (const [k, v] of entries) { if (k <= tk) res = v; else break; }
     return res;
   }, [capLog]);
+
+  // Due list (used by recognition/review)
+  const dueCards = useMemo(() => {
+    const t = now();
+    const key = settings.mode === "recognition" ? "fast" : "slow";
+    let list = cards.filter((c) => (c?.srs?.[key]?.nextDue ?? 0) <= t);
+    if (filterPack !== "ALL") list = list.filter((c) => c.pack === filterPack);
+    list.sort((a, b) => {
+      if (filterPack === "ALL" && a.pack !== b.pack) return String(a.pack).localeCompare(String(b.pack));
+      const ao = a.order ?? Number.POSITIVE_INFINITY, bo = b.order ?? Number.POSITIVE_INFINITY;
+      if (ao !== bo) return ao - bo;
+      const ar = String(a.ref || ""), br = String(b.ref || "");
+      if (ar !== br) return ar.localeCompare(br);
+      return String(a.id).localeCompare(String(b.id));
+    });
+    const remain = Math.max(0, dailyRemaining(settings.mode));
+    return list.slice(0, remain);
+  }, [cards, filterPack, settings.mode, daily, dailyReviewed, todayCaps]); // (deps ok if you like)
+
+
+  // Current card source:
+  // - Writing: always from sessionQueue
+  // - Others: from sessionQueue if present else dueCards[0]
+  const currentCard = useMemo(() => {
+    if (sessionQueue.length > 0) {
+      const id = sessionQueue[0];
+      return cards.find((c) => c.id === id) || null;
+    }
+    if (settings.mode === "writing") return null; // require Start Session / or manual write selection
+    return dueCards[0];
+  }, [sessionQueue, cards, dueCards, settings.mode]);
+
+  // Keyboard shortcuts (DISABLE in writing mode) — moved below currentCard
+  useEffect(() => {
+    function onKey(e) {
+      const tag = (e.target && e.target.tagName) ? e.target.tagName.toLowerCase() : "";
+      if (tag === "input" || tag === "textarea" || e.target.isContentEditable) return;
+      if (settings.mode === "writing") return;
+      const lbl = SHORTCUT_MAP[e.key.toLowerCase?.() || e.key];
+      if (!lbl) return;
+      if (!currentCard) return;
+      e.preventDefault();
+      handleGrade(lbl);
+    }
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [currentCard, settings.mode]);
+
+  // Reset "submitted" when card/mode changes
+  useEffect(() => { setWritingSubmitted(false); }, [settings.mode, currentCard?.id]);
+
+  function dailyRemaining(mode) {
+    const goal = mode === "recognition" ? todayCaps.fast : todayCaps.slow;
+    const done = mode === "recognition" ? dailyReviewed.fast : dailyReviewed.slow;
+    return Math.max(0, goal - done);
+  }
 
   // Start session
   async function startSession() {
