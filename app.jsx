@@ -306,10 +306,39 @@ function App() {
   const [versesPack, setVersesPack] = useState("ALL");
   const [capLog, setCapLog] = useState({});
   const [daily, setDaily] = useState({ key: todayKey(), slow: 0, fast: 0 });
-  const dailyRemaining = (mode) =>
-    mode === "recognition"
-      ? settings.dailyCapFast - daily.fast
-      : settings.dailyCapSlow - daily.slow;
+  // Make header match History: compute today's reviewed counts from `history`
+  const dailyReviewed = useMemo(() => {
+    const tk = todayKey();
+    let slow = 0, fast = 0;
+    for (const h of history) {
+      if (isoDay(h.ts || Date.now()) === tk) {
+        if (h.mode === "slow") slow += 1;
+        else fast += 1;
+      }
+    }
+    return { slow, fast };
+  }, [history]);
+
+  // Get today's goal from capLog using the same "latest snapshot <= today" rule
+  const todayCaps = useMemo(() => {
+    const tk = todayKey();
+    const entries = Object.entries(capLog)
+      .map(([k, v]) => [k, { slow: Number(v?.slow || 0), fast: Number(v?.fast || 0) }])
+      .sort((a, b) => a[0].localeCompare(b[0])); // ascending by day
+    let res = { slow: 0, fast: 0 };
+    for (const [k, v] of entries) {
+      if (k <= tk) res = v;
+      else break;
+    }
+    return res;
+  }, [capLog]);
+
+  // Remaining = goal - done, by mode, same basis as History
+  const dailyRemaining = (mode) => {
+    const goal = mode === "recognition" ? todayCaps.fast : todayCaps.slow;
+    const done = mode === "recognition" ? dailyReviewed.fast : dailyReviewed.slow;
+    return Math.max(0, goal - done);
+  };
 
   const [packManagerOpen, setPackManagerOpen] = useState(false);
   const fileInputRef = useRef(null);
@@ -675,10 +704,10 @@ function App() {
         {/* Daily goal status bar */}
         <div className="text-xs text-gray-500">
           Daily {settings.mode === "recognition" ? "FAST" : "SLOW"} goal:{" "}
-          {settings.mode === "recognition" ? settings.dailyCapFast : settings.dailyCapSlow}
+          {settings.mode === "recognition" ? todayCaps.fast : todayCaps.slow}
           {" · "}done:{" "}
-          {settings.mode === "recognition" ? daily.fast : daily.slow}
-          {" · "}left: {Math.max(0, dailyRemaining(settings.mode))}
+          {settings.mode === "recognition" ? dailyReviewed.fast : dailyReviewed.slow}
+          {" · "}left: {dailyRemaining(settings.mode)}
         </div>
 
         {/* Settings */}
