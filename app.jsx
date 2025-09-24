@@ -425,44 +425,73 @@ function diffCharsLCS(typedRaw, targetRaw, opts = defaultWritingOptions()) {
     for (let k = 0; k < T.keys.length; k++) if (T.keys[k] !== G.keys[k]) { exact = false; break; }
   }
 
-  // LCS mask for the typed units
+  // LCS mask for the typed units (for per-char highlights)
   const mask = lcsMatchMask(T.keys, G.keys);
   const runs = [];
   let pos = 0;
-
   for (let u = 0; u < T.units.length; u++) {
     const unit = T.units[u];
-    if (pos < unit.rawStart) {
-      runs.push({ text: typedRaw.slice(pos, unit.rawStart), ok: null }); // neutral (ignored by opts)
-    }
+    if (pos < unit.rawStart) runs.push({ text: typedRaw.slice(pos, unit.rawStart), ok: null });
     runs.push({ text: typedRaw.slice(unit.rawStart, unit.rawEnd), ok: !!mask[u] });
     pos = unit.rawEnd;
   }
-  if (pos < T.rawLength) {
-    runs.push({ text: typedRaw.slice(pos), ok: null });
+  if (pos < T.rawLength) runs.push({ text: typedRaw.slice(pos), ok: null });
+
+  // --- NEW: contiguous alignment of the T-prefix somewhere inside G (to find missed head/tail) ---
+  let startIdx = null;                    // index in G.keys where user's first kept unit aligns
+  let matchedLen = 0;                     // how many units match contiguously from that start
+  if (T.keys.length > 0) {
+    for (let s = 0; s < G.keys.length; s++) {
+      if (T.keys[0] !== G.keys[s]) continue;
+      let m = 0;
+      while (m < T.keys.length && s + m < G.keys.length && T.keys[m] === G.keys[s + m]) m++;
+      if (m > matchedLen) { startIdx = s; matchedLen = m; }
+      if (m === T.keys.length) break; // perfect contiguous alignment for the whole typed input
+    }
   }
 
-  // NEW: detect "missing tail" if user's normalized input is a prefix of the goal
-  let missingTailRaw = "";
-  let missingTailStartRawIndex = null;
+  // Compute raw indices for head/mid/tail
+  let missingHeadRaw = "", missingHeadEndRawIndex = null;
+  let missingTailRaw = "", missingTailStartRawIndex = null;
 
-  const isPrefix = (() => {
-    if (T.keys.length > G.keys.length) return false;
-    for (let i = 0; i < T.keys.length; i++) {
-      if (T.keys[i] !== G.keys[i]) return false;
-    }
-    return true;
-  })();
-
-  if (isPrefix && T.keys.length < G.keys.length) {
-    const nextUnit = G.units[T.keys.length]; // first goal unit not covered by the typed prefix
-    if (nextUnit) {
-      missingTailStartRawIndex = nextUnit.rawStart;
+  // Tail by "how much of T was typed" (used in Typing panel append)
+  if (startIdx !== null) {
+    const tailUnitIdxByTyped = startIdx + T.keys.length;
+    if (tailUnitIdxByTyped < G.units.length) {
+      missingTailStartRawIndex = G.units[tailUnitIdxByTyped].rawStart;
       missingTailRaw = targetRaw.slice(missingTailStartRawIndex);
     }
   }
 
-  return { runs, exact, missingTailRaw, missingTailStartRawIndex };
+  // Head (if user started later than the verse start)
+  if (startIdx !== null && startIdx > 0) {
+    missingHeadEndRawIndex = G.units[startIdx].rawStart;
+    missingHeadRaw = targetRaw.slice(0, missingHeadEndRawIndex);
+  }
+
+  // Also expose mid slice for the Actual panel (based on "how much matched contiguously")
+  let midStartRawIndex = null, midEndRawIndex = null;
+  if (startIdx !== null) {
+    midStartRawIndex = G.units[startIdx].rawStart;
+    midEndRawIndex =
+      matchedLen > 0
+        ? G.units[startIdx + matchedLen - 1].rawEnd
+        : midStartRawIndex;
+  }
+
+  return {
+    runs,
+    exact,
+    // head
+    missingHeadRaw,
+    missingHeadEndRawIndex,   // end of head (start of aligned middle)
+    // tail (by "typed length" for user's-typing append)
+    missingTailRaw,
+    missingTailStartRawIndex,
+    // mid slice for Actual panel
+    midStartRawIndex,
+    midEndRawIndex,
+  };
 }
 
 /* =========================
@@ -1161,7 +1190,7 @@ function HintToggle({ text, words }) {
 function WritingCard({ card, opts, onSubmit, onSkip }) {
   const [value, setValue] = useState("");
   const [composing, setComposing] = useState(false);
-  const [feedback, setFeedback] = useState(null); // { runs, exact, missingTailRaw, missingTailStartRawIndex }
+  const [feedback, setFeedback] = useState(null); // {runs, exact, missingHead*, missingTail*, mid*}
   const [view, setView] = useState("typed"); // "typed" | "actual"
   const taRef = useRef(null);
 
@@ -1170,7 +1199,7 @@ function WritingCard({ card, opts, onSubmit, onSkip }) {
     const ta = taRef.current;
     if (!ta) return;
     ta.style.height = "auto";
-    ta.style.height = Math.min(ta.scrollHeight, 320) + "px"; // cap height -> scroll
+    ta.style.height = Math.min(ta.scrollHeight, 320) + "px";
   }, [value]);
 
   // Reset when card changes
@@ -1188,64 +1217,89 @@ function WritingCard({ card, opts, onSubmit, onSkip }) {
     onSubmit?.();
   }
 
-  // Helper: render the user's typing with green/red highlights + optional missing tail
+  // --- Panels ---
   function TypingPanel() {
+    const hasHead = !!feedback.missingHeadRaw;
+    const hasTail = !!feedback.missingTailRaw;
+
     return (
       <div className="rounded-xl border p-3 bg-gray-50">
         <div className="font-mono whitespace-pre-wrap leading-6 break-words">
+          {/* NEW: missed head */}
+          {hasHead && (
+            <span className="bg-rose-200 text-rose-900 rounded-sm">{feedback.missingHeadRaw}</span>
+          )}
+          {/* user's typing with LCS highlights */}
           {feedback.runs.map((r, i) =>
             r.ok === true ? (
               <span key={i} className="bg-emerald-200 text-emerald-900 rounded-sm">{r.text}</span>
             ) : r.ok === false ? (
               <span key={i} className="bg-rose-200 text-rose-900 rounded-sm">{r.text}</span>
             ) : (
-              <span key={i}>{r.text}</span> // neutral
+              <span key={i}>{r.text}</span>
             )
           )}
-          {/* NEW: show any missing tail inline, clearly marked */}
-          {feedback.missingTailRaw ? (
+          {/* missed tail */}
+          {hasTail && (
             <>
               {" "}
-              <span className="bg-rose-200 text-rose-900 rounded-sm">
-                {feedback.missingTailRaw}
-              </span>
+              <span className="bg-rose-200 text-rose-900 rounded-sm">{feedback.missingTailRaw}</span>
             </>
-          ) : null}
+          )}
         </div>
-        {!feedback.exact && (
+        {!feedback.exact ? (
           <div className="mt-2 text-xs text-gray-500">
-            Green = correct, Red = incorrect. Red at the end indicates you stopped early.
+            Green = correct, Red = incorrect. Red at the start/end shows skipped opening/ending words.
           </div>
-        )}
-        {feedback.exact && (
+        ) : (
           <div className="mt-2 text-xs text-emerald-700">Perfect match after normalization.</div>
         )}
       </div>
     );
   }
 
-  // Helper: render the actual verse; if the user stopped early, highlight the missed tail in red
   function ActualPanel() {
-    if (!feedback?.missingTailRaw || feedback.missingTailStartRawIndex == null) {
+    const f = feedback;
+    const hasHead = f?.missingHeadEndRawIndex != null;
+    const hasTail = f?.midEndRawIndex != null && f.midEndRawIndex < card.text.length;
+
+    if (!f || (f.midStartRawIndex == null)) {
+      // fallback: plain verse
       return (
         <div className="rounded-xl border p-3 bg-gray-50">
-          <div className="font-mono whitespace-pre-wrap leading-6 break-words">
-            {card.text}
-          </div>
+          <div className="font-mono whitespace-pre-wrap leading-6 break-words">{card.text}</div>
         </div>
       );
     }
-    const start = feedback.missingTailStartRawIndex;
-    const head = card.text.slice(0, start);
-    const tail = card.text.slice(start);
+
+    const headEnd = f.missingHeadEndRawIndex ?? 0; // start of aligned mid
+    const midStart = f.midStartRawIndex ?? headEnd;
+    const midEnd = f.midEndRawIndex ?? midStart;
+
+    const head = card.text.slice(0, headEnd);
+    const mid = card.text.slice(midStart, midEnd);
+    const tail = card.text.slice(midEnd);
+
     return (
       <div className="rounded-xl border p-3 bg-gray-50">
         <div className="font-mono whitespace-pre-wrap leading-6 break-words">
-          <span>{head}</span>
-          <span className="bg-rose-200 text-rose-900 rounded-sm">{tail}</span>
+          {/* missed head */}
+          {hasHead ? (
+            <span className="bg-rose-200 text-rose-900 rounded-sm">{head}</span>
+          ) : (
+            <span>{card.text.slice(0, midStart)}</span>
+          )}
+          {/* matched middle (normal) */}
+          <span>{mid}</span>
+          {/* missed tail */}
+          {hasTail ? (
+            <span className="bg-rose-200 text-rose-900 rounded-sm">{tail}</span>
+          ) : (
+            <span>{card.text.slice(midEnd)}</span>
+          )}
         </div>
         <div className="mt-2 text-xs text-gray-500">
-          Red = words you didn’t type yet.
+          Red = parts you didn’t type (beginning or end).
         </div>
       </div>
     );
@@ -1253,7 +1307,7 @@ function WritingCard({ card, opts, onSubmit, onSkip }) {
 
   return (
     <div className="space-y-3">
-      {/* Big writing box (hidden after submit) */}
+      {/* Editor (hidden after submit) */}
       {!feedback && (
         <>
           <textarea
@@ -1282,7 +1336,6 @@ function WritingCard({ card, opts, onSubmit, onSkip }) {
       {/* Feedback + toggle */}
       {feedback && (
         <>
-          {/* Toggle between views */}
           <div className="flex gap-2">
             <button
               className={`px-3 py-1 rounded-full text-sm ${view === "typed" ? "bg-indigo-600 text-white" : "bg-gray-200"}`}
