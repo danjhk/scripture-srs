@@ -61,26 +61,30 @@ function hashString(s) {
 function parseLineToCard(line, fileName) {
   const clean = line.trim();
   if (!clean) return null;
+
+  // NEW: allow Hangul + optional space before chapter + comma/hyphen verse lists
   const refMatch = clean.match(
-    /^(?<ref>(?:[1-3]\s+)?[A-Za-zÀ-ÖØ-öø-ÿ'`´^.\-]+(?:\s+[A-Za-zÀ-ÖØ-öø-ÿ'`´^.\-]+)*\s+\d{1,3}:\d{1,3}(?:-\d{1,3})?)/
+    /^(?<ref>(?:[1-3]\s*)?(?:[A-Za-zÀ-ÖØ-öø-ÿ\u3131-\u318E\uAC00-\uD7A3\u00B7'`´^.\-]+(?:\s+[A-Za-zÀ-ÖØ-öø-ÿ\u3131-\u318E\uAC00-\uD7A3\u00B7'`´^.\-]+)*)\s*\d{1,3}:\d{1,3}(?:[-,]\d{1,3})?)/
   );
+
   let ref, text;
   if (refMatch?.groups?.ref) {
     ref = refMatch.groups.ref.trim();
     const rest = clean.slice(refMatch[0].length);
+    // remove an optional separator right after the ref (":", "-", "–") and leading spaces
     text = rest.replace(/^\s*[:\-–]?\s*/, "");
   } else {
-    const firstColon = clean.indexOf(":");
-    const secondColon = firstColon >= 0 ? clean.indexOf(":", firstColon + 1) : -1;
-    const sepIdx = secondColon > -1 ? secondColon : clean.search(/[\-–:]/);
-    if (sepIdx > -1 && sepIdx < clean.length - 1) {
-      ref = clean.slice(0, sepIdx).trim();
-      text = clean.slice(sepIdx + 1).replace(/^\s*/, "");
+    // Improved fallback: grab everything up to the chapter:verse token (supports 5:11,12 and 5:11-12)
+    const m = clean.match(/^(.*?\d{1,3}:\d{1,3}(?:[-,]\d{1,3})?)(?:\s+|$)/);
+    if (m) {
+      ref = m[1].trim();
+      text = clean.slice(m[0].length).trim();
     } else {
       ref = fileName.replace(/\.[^.]+$/, "");
       text = clean;
     }
   }
+
   const id = hashString(`${fileName}|${ref}|${text}`);
   return {
     id,
