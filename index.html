@@ -506,21 +506,6 @@
           }
         };
 
-        const pushBtn = document.createElement('button');
-        function refreshPushBtn() {
-          const d = window._dirty || {};
-          const dirty = d.cards || d.settings || d.history || d.capLog;
-          pushBtn.textContent = dirty ? 'Push to Cloud' : 'Synced';
-          pushBtn.disabled = !dirty;
-          pushBtn.className =
-            'fixed bottom-4 right-4 px-4 py-2 rounded-xl shadow ' +
-            (dirty ? 'bg-emerald-600 text-white' : 'bg-gray-200 text-gray-500');
-        }
-        refreshPushBtn();
-        pushBtn.onclick = () => window.pushSRS();
-        document.body.appendChild(pushBtn);
-        window.addEventListener('srs-sync', refreshPushBtn);
-
         async function startRealtime(uid) {
           const schedulePull = (function () {
             let t = null;

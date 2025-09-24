@@ -311,6 +311,7 @@ function App() {
 
   const [packManagerOpen, setPackManagerOpen] = useState(false);
   const fileInputRef = useRef(null);
+  const [syncOpen, setSyncOpen] = useState(false);
 
   // --- Sync status (listen to global events from index.html) ---
   const [sync, setSync] = useState(() => (window.srsSync ?? { pushing:false, pulling:false, lastPullAt:null, lastPushAt:null }));
@@ -320,6 +321,17 @@ function App() {
     // Also pick up initial state if pull happened before mount
     onSync();
     return () => window.removeEventListener('srs-sync', onSync);
+  }, []);
+
+  // Re-render chip on online/offline toggles
+  useEffect(() => {
+    const bump = () => setSync((s) => ({ ...s }));
+    window.addEventListener('online', bump);
+    window.addEventListener('offline', bump);
+    return () => {
+      window.removeEventListener('online', bump);
+      window.removeEventListener('offline', bump);
+    };
   }, []);
 
   function fmtTime(ts) {
@@ -640,33 +652,29 @@ function App() {
             >
               Manage Packs
             </button>
-            <button
-              className="px-3 py-2 rounded-xl bg-gray-200 shrink-0"
-              onClick={() => window.pullSRS ? window.pullSRS() : alert('Sign in first (top-right)')}
-            >
-              Pull from Cloud
-            </button>
-            <button
-              className="px-3 py-2 rounded-xl bg-gray-200 shrink-0"
-              onClick={() => window.pushSRS ? window.pushSRS() : alert('Sign in first (top-right)')}
-            >
-              Push to Cloud
-            </button>
 
             <div className="text-sm text-gray-600 min-w-0">
               Due: {dueCards.length} | Done: {completed} | {sessionElapsedMin}m
             </div>
             {/* Sync status chip */}
-            <span
-              className={
-                "text-xs px-2 py-1 rounded-full " +
-                (sync.pushing || sync.pulling ? "bg-amber-100 text-amber-800" : "bg-gray-100 text-gray-700")
-              + " shrink-0"
-              }
-              title={`Last pull: ${fmtTime(sync.lastPullAt)} · Last push: ${fmtTime(sync.lastPushAt)}`}
-            >
-              {sync.pushing ? "Pushing…" : (sync.pulling ? "Pulling…" : `Last pull ${fmtTime(sync.lastPullAt)}`)}
-            </span>
+            {(() => {
+              const isOffline = typeof navigator !== 'undefined' && !navigator.onLine;
+              const isSyncing = sync.pushing || sync.pulling;
+              const label = isOffline ? "Offline" : (isSyncing ? "Syncing…" : "Synced");
+              const color =
+                isOffline ? "bg-rose-100 text-rose-800"
+                : isSyncing ? "bg-amber-100 text-amber-800"
+                : "bg-emerald-50 text-emerald-700";
+              return (
+                <button
+                  onClick={() => setSyncOpen(true)}
+                  className={`text-xs px-2 py-1 rounded-full ${color} shrink-0 cursor-pointer`}
+                  title={`Status • Last pull: ${fmtTime(sync.lastPullAt)} • Last push: ${fmtTime(sync.lastPushAt)}`}
+                >
+                  {label}
+                </button>
+              );
+            })()}
           </div>
         </header>
 
@@ -732,7 +740,7 @@ function App() {
         </section>
 
         {/* Settings */}
-        <section className="rounded-2xl shadow p-4 bg-white grid gap-3 sm:grid-cols-3 items-end">
+        <section className="rounded-2xl shadow p-4 bg-white grid gap-3 sm:grid-cols-4 items-end">
           <div>
             <label className="block text-sm font-medium">Mode</label>
             <select
@@ -789,6 +797,15 @@ function App() {
                 }}
               />
             </div>
+          </div>
+          <div>
+            <label className="block text-sm font-medium">Advanced</label>
+            <button
+              className="mt-1 w-full px-3 py-2 rounded-xl bg-gray-200"
+              onClick={() => setSyncOpen(true)}
+            >
+              Sync Details
+            </button>
           </div>
         </section>
 
@@ -1072,6 +1089,14 @@ function App() {
               document.body.removeChild(a);
               setTimeout(() => URL.revokeObjectURL(url), 1000);
             }}
+          />
+        )}
+        {/* Sync Details Modal */}
+        {syncOpen && (
+          <SyncDetailsModal
+            sync={sync}
+            fmtTime={fmtTime}
+            onClose={() => setSyncOpen(false)}
           />
         )}
       </div>
@@ -1653,6 +1678,50 @@ function GoalHistoryView({ history, capLog, defaultWindowDays = 14 }) {
         Goals are snapshotted daily and summed for weekly/monthly/yearly views. Colors: green = goal met, red = not met.
       </p>
     </section>
+  );
+}
+
+function SyncDetailsModal({ sync, onClose, fmtTime }) {
+  const isOffline = typeof navigator !== 'undefined' && !navigator.onLine;
+  const isSyncing = !!(sync.pushing || sync.pulling);
+  async function syncNow() {
+    try {
+      if (window.pushSRS) await window.pushSRS();
+      if (window.pullSRS) await window.pullSRS();
+    } catch (e) {}
+  }
+  return (
+    <div className="fixed inset-0 bg-black/40 z-50 flex items-center justify-center p-4">
+      <div className="max-w-md w-full bg-white rounded-2xl shadow-xl p-4 space-y-3">
+        <div className="flex items-center justify-between">
+          <h3 className="text-lg font-semibold">Sync Details</h3>
+          <button className="px-3 py-2 rounded-xl bg-gray-200" onClick={onClose}>
+            Close
+          </button>
+        </div>
+        <div className="text-sm text-gray-700 space-y-1">
+          <div>
+            <span className="font-medium">Status:</span>{" "}
+            {isOffline ? "Offline" : (isSyncing ? "Syncing…" : "Idle")}
+          </div>
+          <div><span className="font-medium">Last pull:</span> {fmtTime(sync.lastPullAt)}</div>
+          <div><span className="font-medium">Last push:</span> {fmtTime(sync.lastPushAt)}</div>
+        </div>
+        <div className="pt-2">
+          <button
+            className={`px-4 py-2 rounded-xl text-white ${isOffline || isSyncing ? "bg-gray-300 cursor-not-allowed" : "bg-indigo-600"}`}
+            onClick={syncNow}
+            disabled={isOffline || isSyncing}
+            title={isOffline ? "Go online to sync" : (isSyncing ? "Already syncing" : "Push & Pull now")}
+          >
+            Sync now
+          </button>
+        </div>
+        <p className="text-[11px] text-gray-500">
+          Sync is automatic. Use “Sync now” if you think this device missed an update.
+        </p>
+      </div>
+    </div>
   );
 }
 
