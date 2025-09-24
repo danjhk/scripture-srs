@@ -687,58 +687,6 @@ function App() {
           {" · "}left: {Math.max(0, dailyRemaining(settings.mode))}
         </div>
 
-        {/* Import / Export */}
-        <section className="grid gap-3 sm:grid-cols-2">
-          <div className="rounded-2xl shadow p-4 bg-white space-y-2">
-            <h2 className="font-semibold mb-2">Import TXT Packs</h2>
-            {/* Button triggers hidden input to avoid iOS file input overflow */}
-            <button
-              className="px-3 py-2 rounded-xl bg-gray-900 text-white w-full sm:w-auto"
-              onClick={() => fileInputRef.current?.click()}
-            >
-              Select .txt files
-            </button>
-            <input
-              ref={fileInputRef}
-              type="file"
-              multiple
-              accept=".txt,text/plain"
-              className="hidden"
-              onChange={(e) =>
-                e.target.files && importTxtFiles(Array.from(e.target.files))
-              }
-            />
-            <p className="text-xs text-gray-500 mt-2">
-              Tip: Each non-empty line becomes a card. Use "Reference: Verse".
-            </p>
-          </div>
-          <div className="rounded-2xl shadow p-4 bg-white space-y-2">
-            <h2 className="font-semibold">Backup / Restore</h2>
-            <div className="flex flex-wrap gap-2">
-              <button
-                className="px-3 py-2 rounded-xl bg-gray-900 text-white w-full sm:w-auto"
-                onClick={exportJson}
-              >
-                Export JSON
-              </button>
-              <label className="px-3 py-2 rounded-xl bg-gray-200 cursor-pointer w-full sm:w-auto text-center inline-flex justify-center">
-                Import JSON
-                <input
-                  type="file"
-                  className="hidden"
-                  accept="application/json"
-                  onChange={(e) =>
-                    e.target.files && importJson(e.target.files[0])
-                  }
-                />
-              </label>
-            </div>
-            <p className="text-xs text-gray-500">
-              Use this to move progress between devices (manual).
-            </p>
-          </div>
-        </section>
-
         {/* Settings */}
         <section className="rounded-2xl shadow p-4 bg-white grid gap-3 sm:grid-cols-4 items-end">
           <div>
@@ -804,7 +752,7 @@ function App() {
               className="mt-1 w-full px-3 py-2 rounded-xl bg-gray-200"
               onClick={() => setSyncOpen(true)}
             >
-              Sync Details
+              Advanced...
             </button>
           </div>
         </section>
@@ -1091,12 +1039,16 @@ function App() {
             }}
           />
         )}
-        {/* Sync Details Modal */}
+        {/* Advanced Modal (Sync + Import/Export) */}
         {syncOpen && (
-          <SyncDetailsModal
+          <AdvancedModal
             sync={sync}
             fmtTime={fmtTime}
             onClose={() => setSyncOpen(false)}
+            fileInputRef={fileInputRef}
+            importTxtFiles={importTxtFiles}
+            exportJson={exportJson}
+            importJson={importJson}
           />
         )}
       </div>
@@ -1681,7 +1633,7 @@ function GoalHistoryView({ history, capLog, defaultWindowDays = 14 }) {
   );
 }
 
-function SyncDetailsModal({ sync, onClose, fmtTime }) {
+function AdvancedModal({ sync, onClose, fmtTime, fileInputRef, importTxtFiles, exportJson, importJson }) {
   const isOffline = typeof navigator !== 'undefined' && !navigator.onLine;
   const isSyncing = !!(sync.pushing || sync.pulling);
   async function syncNow() {
@@ -1692,14 +1644,16 @@ function SyncDetailsModal({ sync, onClose, fmtTime }) {
   }
   return (
     <div className="fixed inset-0 bg-black/40 z-50 flex items-center justify-center p-4">
-      <div className="max-w-md w-full bg-white rounded-2xl shadow-xl p-4 space-y-3">
+      <div className="max-w-3xl w-full bg-white rounded-2xl shadow-xl p-4 space-y-4">
         <div className="flex items-center justify-between">
-          <h3 className="text-lg font-semibold">Sync Details</h3>
+          <h3 className="text-lg font-semibold">Advanced</h3>
           <button className="px-3 py-2 rounded-xl bg-gray-200" onClick={onClose}>
             Close
           </button>
         </div>
-        <div className="text-sm text-gray-700 space-y-1">
+
+        {/* Sync status row */}
+        <div className="text-sm text-gray-700 grid sm:grid-cols-3 gap-2 items-center">
           <div>
             <span className="font-medium">Status:</span>{" "}
             {isOffline ? "Offline" : (isSyncing ? "Syncing…" : "Idle")}
@@ -1707,7 +1661,7 @@ function SyncDetailsModal({ sync, onClose, fmtTime }) {
           <div><span className="font-medium">Last pull:</span> {fmtTime(sync.lastPullAt)}</div>
           <div><span className="font-medium">Last push:</span> {fmtTime(sync.lastPushAt)}</div>
         </div>
-        <div className="pt-2">
+        <div>
           <button
             className={`px-4 py-2 rounded-xl text-white ${isOffline || isSyncing ? "bg-gray-300 cursor-not-allowed" : "bg-indigo-600"}`}
             onClick={syncNow}
@@ -1716,10 +1670,62 @@ function SyncDetailsModal({ sync, onClose, fmtTime }) {
           >
             Sync now
           </button>
+          <p className="text-[11px] text-gray-500 mt-1">
+            Sync is automatic. Use “Sync now” if you think this device missed an update.
+          </p>
         </div>
-        <p className="text-[11px] text-gray-500">
-          Sync is automatic. Use “Sync now” if you think this device missed an update.
-        </p>
+
+        {/* Import / Export moved here */}
+        <div className="grid gap-3 sm:grid-cols-2">
+          <div className="rounded-2xl border p-4 bg-gray-50 space-y-2">
+            <h4 className="font-semibold mb-1">Import TXT Packs</h4>
+            <button
+              className="px-3 py-2 rounded-xl bg-gray-900 text-white w-full sm:w-auto"
+              onClick={() => fileInputRef.current?.click()}
+            >
+              Select .txt files
+            </button>
+            <input
+              ref={fileInputRef}
+              type="file"
+              multiple
+              accept=".txt,text/plain"
+              className="hidden"
+              onChange={(e) =>
+                e.target.files && importTxtFiles(Array.from(e.target.files))
+              }
+            />
+            <p className="text-xs text-gray-500">
+              Tip: Each non-empty line becomes a card. Use "Reference: Verse".
+            </p>
+          </div>
+
+          <div className="rounded-2xl border p-4 bg-gray-50 space-y-2">
+            <h4 className="font-semibold mb-1">Backup / Restore</h4>
+            <div className="flex flex-wrap gap-2">
+              <button
+                className="px-3 py-2 rounded-xl bg-gray-900 text-white w-full sm:w-auto"
+                onClick={exportJson}
+              >
+                Export JSON
+              </button>
+              <label className="px-3 py-2 rounded-xl bg-gray-200 cursor-pointer w-full sm:w-auto text-center inline-flex justify-center">
+                Import JSON
+                <input
+                  type="file"
+                  className="hidden"
+                  accept="application/json"
+                  onChange={(e) =>
+                    e.target.files && importJson(e.target.files[0])
+                  }
+                />
+              </label>
+            </div>
+            <p className="text-xs text-gray-500">
+              Use this to move progress between devices (manual).
+            </p>
+          </div>
+        </div>
       </div>
     </div>
   );
