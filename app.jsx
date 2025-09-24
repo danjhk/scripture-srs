@@ -1217,6 +1217,20 @@ function WritingCard({ card, opts, onSubmit, onSkip }) {
     onSubmit?.();
   }
 
+  function handleTextareaKeyDown(e) {
+    // IME-safe: don't intercept Enter while composing
+    if (composing || e.isComposing || e.nativeEvent?.isComposing) return;
+
+    // Plain Enter = Submit. Shift/Ctrl/Alt/Meta keep their normal behavior
+    if (
+      e.key === "Enter" &&
+      !e.shiftKey && !e.ctrlKey && !e.altKey && !e.metaKey
+    ) {
+      e.preventDefault();
+      handleSubmit();
+    }
+  }
+
   // --- Panels ---
   function TypingPanel() {
     const hasHead = !!feedback.missingHeadRaw;
@@ -1318,6 +1332,8 @@ function WritingCard({ card, opts, onSubmit, onSkip }) {
             onChange={(e) => setValue(e.target.value)}
             onCompositionStart={() => setComposing(true)}
             onCompositionEnd={() => setComposing(false)}
+            onKeyDown={handleTextareaKeyDown}
+            enterKeyHint="done"
           />
           <div className="flex gap-2">
             <button
