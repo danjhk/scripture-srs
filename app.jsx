@@ -476,6 +476,10 @@ function App() {
   const [versesPack, setVersesPack] = useState("ALL");
   const [capLog, setCapLog] = useState({});
   const [daily, setDaily] = useState({ key: todayKey(), slow: 0, fast: 0 });
+  // Needed by header & Advanced modal
+  const [packManagerOpen, setPackManagerOpen] = useState(false);
+  const [syncOpen, setSyncOpen] = useState(false);
+  const fileInputRef = useRef(null);
 
   // NEW: writing state: whether current card has been submitted
   const [writingSubmitted, setWritingSubmitted] = useState(false);
@@ -1007,14 +1011,63 @@ function App() {
         {/* History */}
         <GoalHistoryView history={history} capLog={capLog} defaultWindowDays={14} />
 
-        {/* Pack Manager Modal (unchanged) */}
-        <PackManagerContainer
-          cards={cards}
-          setCards={setCards}
-          filterPack={filterPack}
-          setFilterPack={setFilterPack}
-        />
-
+        {/* Pack Manager Modal */}
+        {packManagerOpen && (
+          <PackManager
+            cards={cards}
+            onClose={() => setPackManagerOpen(false)}
+            onDelete={async (packsToDelete) => {
+              const norm = (s) => {
+                const raw = String(s ?? "");
+                const n = typeof raw.normalize === "function" ? raw.normalize("NFC") : raw;
+                return n.replace(/\u00A0/g, " ").replace(/\s+/g, " ").trim().toLowerCase();
+              };
+              const delNorm = new Set(packsToDelete.map(norm));
+              try {
+                const client = window.supabaseClient;
+                if (client) {
+                  const { data: u } = await client.auth.getUser();
+                  const uid = u?.user?.id;
+                  if (uid) {
+                    const { error } = await client
+                      .from("cards")
+                      .delete()
+                      .eq("user_id", uid)
+                      .in("pack", packsToDelete);
+                    if (error) { console.error("Server delete failed:", error); alert("Server delete failed: " + error.message); }
+                  }
+                }
+              } catch (e) { console.warn("Delete on server skipped/failed:", e); }
+              setCards((prev) => {
+                const before = prev.length;
+                const next = prev.filter((c) => !delNorm.has(norm(c.pack)));
+                const removed = before - next.length;
+                if (removed === 0) alert("No cards matched those pack names.");
+                else alert(`Deleted ${removed} card(s) from ${delNorm.size} pack(s).`);
+                return next;
+              });
+              if (filterPack !== "ALL" && delNorm.has(norm(filterPack))) setFilterPack("ALL");
+              setPackManagerOpen(false);
+            }}
+            onExport={(packsToExport) => {
+              const norm = (s) => {
+                const raw = String(s ?? "");
+                const n = typeof raw.normalize === "function" ? raw.normalize("NFC") : raw;
+                return n.replace(/\u00A0/g, " ").replace(/\s+/g, " ").trim().toLowerCase();
+              };
+              const exp = new Set(packsToExport.map(norm));
+              const subset = cards.filter((c) => exp.has(norm(c.pack)));
+              if (subset.length === 0) { alert("No cards found for the selected packs."); return; }
+              const blob = new Blob([JSON.stringify({ cards: subset, settings: defaultSettings() }, null, 2)], { type: "application/json" });
+              const url = URL.createObjectURL(blob);
+              const a = document.createElement("a");
+              a.href = url;
+              a.download = `scripture_srs_packs_${new Date().toISOString().slice(0, 10)}.json`;
+              document.body.appendChild(a); a.click(); document.body.removeChild(a);
+              setTimeout(() => URL.revokeObjectURL(url), 1000);
+            }}
+          />
+        )}
         {/* Advanced Modal (add Writing toggles) */}
         {syncOpen && (
           <AdvancedModal
@@ -1652,7 +1705,7 @@ function AdvancedModal({ sync, onClose, fmtTime, fileInputRef, importTxtFiles, e
         <div className="grid gap-3 sm:grid-cols-2">
           <div className="rounded-2xl border p-4 bg-gray-50 space-y-2">
             <h4 className="font-semibold mb-1">Import TXT Packs</h4>
-            <button className="px-3 py-2 rounded-xl bg-gray-900 text-white w-full sm:w-auto" onClick={() => fileInputRef.current?.click()}>Select .txt files</button>
+            <button className="px-3 py-2 rounded-xl bg-gray-900 text-white w-full sm:w-auto" onClick={() => fileInputRef?.current?.click()}>Select .txt files</button>
             <input ref={fileInputRef} type="file" multiple accept=".txt,text/plain" className="hidden"
               onChange={(e) => e.target.files && importTxtFiles(Array.from(e.target.files))} />
             <p className="text-xs text-gray-500">Tip: Each non-empty line becomes a card. Use "Reference: Verse".</p>
