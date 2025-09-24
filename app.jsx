@@ -181,6 +181,8 @@ function upgradeSettings(settings) {
   if (!s.schemaVersion || s.schemaVersion < SCHEMA_VERSION) {
     s.schemaVersion = SCHEMA_VERSION;
   }
+  // Purge legacy "full" mode if it appears in saved data
+  if (s.mode === "full") s.mode = "review";
   return s;
 }
 
@@ -392,19 +394,12 @@ function App() {
     };
   }, []);
 
-  // Keyboard shortcuts: grade with A / 1 / 3 / 7 / 0 / 9, Reveal with Enter/Space in Full
+  // Keyboard shortcuts: grade with A / 1 / 3 / 7 / 0 / 9
   useEffect(() => {
     function onKey(e) {
       // ignore when typing in inputs/textareas
       const tag = (e.target && e.target.tagName) ? e.target.tagName.toLowerCase() : "";
       if (tag === "input" || tag === "textarea" || e.target.isContentEditable) return;
-
-      // Reveal in Full mode
-      if ((e.key === "Enter" || e.key === " ") && settings.mode === "full" && !revealed) {
-        e.preventDefault();
-        handleReveal();
-        return;
-      }
 
       // Grade shortcuts
       const lbl = SHORTCUT_MAP[e.key.toLowerCase?.() || e.key];
@@ -416,7 +411,7 @@ function App() {
     }
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [currentCard, settings.mode, revealed]);
+  }, [currentCard, settings.mode]);
 
   // Keep a daily snapshot of caps in capLog[YYYY-MM-DD] = { slow, fast }
   useEffect(() => {
@@ -498,7 +493,6 @@ function App() {
     } catch {}
     setSessionStart(now());
     setCompleted(0);
-    setRevealed(false);
     // Freeze the current due list for this session so realtime/pulls don't reshuffle it.
     setSessionQueue(dueCards.map(c => c.id));
   }
@@ -524,7 +518,6 @@ function App() {
     );
 
     setCards((prev) => prev.map((c) => (c.id === currentCard.id ? updated : c)));
-    setRevealed(false);
     setCompleted((x) => x + 1);
 
     // Increment daily counter for the schedule used
@@ -555,10 +548,6 @@ function App() {
 
     // If manual queue is active, pop the current id
     setSessionQueue((q) => (q.length && q[0] === currentCard.id ? q.slice(1) : q));
-  }
-
-  function handleReveal() {
-    setRevealed(true);
   }
 
   async function importTxtFiles(files) {
@@ -702,7 +691,6 @@ function App() {
               onChange={(e) => setSettings({ ...settings, mode: e.target.value })}
             >
               <option value="recognition">Recognition (fast)</option>
-              <option value="full">Full (hide all)</option>
               <option value="review">Review (narrow, revealed)</option>
             </select>
           </div>
@@ -774,12 +762,6 @@ function App() {
             >
               Start Session
             </button>
-            <button
-              className="px-4 py-2 rounded-xl bg-gray-200"
-              onClick={() => setRevealed(false)}
-            >
-              Reset Reveal
-            </button>
           </div>
         </section>
 
@@ -818,15 +800,6 @@ function App() {
                     card={currentCard}
                     words={settings.showFirstNWords}
                   />
-                ) : settings.mode === "full" ? (
-                  <div>
-                    <div className="text-gray-700 text-sm">{currentCard.ref}</div>
-                    {!revealed && (
-                      <div className="mt-2 text-xs text-gray-400">
-                        (Tap Reveal to see the verse text)
-                      </div>
-                    )}
-                  </div>
                 ) : (
                   <div>
                     <div className="text-gray-700 text-sm">{currentCard.ref}</div>
@@ -834,29 +807,12 @@ function App() {
                 )}
               </div>
 
-              {settings.mode === "full" && !revealed && (
-                <button
-                  className="px-4 py-2 rounded-xl bg-gray-900 text-white"
-                  onClick={handleReveal}
-                >
-                  Reveal
-                </button>
-              )}
-
               <div className="text-[11px] text-gray-500">
-                Shortcuts: A (Again), 1, 3, 7, 0 (30D), 9 (90D). In Full mode, press Enter/Space to Reveal.
+                Shortcuts: A (Again), 1, 3, 7, 0 (30D), 9 (90D).
               </div>
 
               {/* Verse body */}
               {settings.mode === "recognition" && (
-                <div className="rounded-xl border p-4 bg-gray-50">
-                  <div className="text-sm whitespace-pre-wrap">
-                    {currentCard.text}
-                  </div>
-                </div>
-              )}
-
-              {settings.mode === "full" && revealed && (
                 <div className="rounded-xl border p-4 bg-gray-50">
                   <div className="text-sm whitespace-pre-wrap">
                     {currentCard.text}
@@ -950,7 +906,6 @@ function App() {
           onStartManual={(ids) => {
             if (!ids?.length) return;
             setSessionQueue(ids);
-            setRevealed(false);
             setCompleted(0);
             setSessionStart(now());
           }}
@@ -1354,7 +1309,7 @@ function VersesView({
               value={scheduleKey}
               onChange={(e) => onChangeScheduleKey(e.target.value)}
             >
-              <option value="slow">Slow (Review/Full)</option>
+              <option value="slow">Slow (Review/Writing)</option>
               <option value="fast">Fast (Recognition)</option>
             </select>
           </div>

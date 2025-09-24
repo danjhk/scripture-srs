@@ -249,7 +249,7 @@
             if (!e2 && s) {
               setSettingsLocal({
                 sessionTarget: s.session_target ?? 50,
-                mode: s.mode ?? 'recognition',
+                mode: (s.mode === 'full' ? 'review' : (s.mode ?? 'recognition')),
                 showFirstNWords: s.show_first_n_words ?? 6,
                 shuffle: s.shuffle ?? true,
                 dailyCapSlow: s.daily_cap_slow ?? 60,
