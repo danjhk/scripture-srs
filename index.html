@@ -76,14 +76,8 @@
         window.srsSync = { pushing:false, pulling:false, lastPullAt:null, lastPushAt:null };
         const emitSync = () => window.dispatchEvent(new CustomEvent('srs-sync'));
 
-        let poller = null;
-        let channel = null;
         window._pushing = false;        // guard: we're currently pushing
         window._syncFromCloud = false;  // guard: we're applying pull → don't auto-push
-
-        const debounce = (fn, ms = 4000) => {
-          let t; return (...args) => { clearTimeout(t); t = setTimeout(() => fn(...args), ms); };
-        };
 
         // Track which entities really changed since last push
         window._dirty = { cards:false, settings:false, history:false, capLog:false };
@@ -182,8 +176,17 @@
           window.dispatchEvent(new CustomEvent('srs:pulled', { detail: { entity: 'capLog', at: Date.now() }}));
         }
 
+        // ===== Delta-sync helpers =====
+        function getLastSync(key) {
+          // keys: 'cards', 'history', 'settings', 'goal_caps'
+          const v = localStorage.getItem(`srs_last_${key}_sync`);
+          return v ? Number(v) : 0;
+        }
+        function setLastSync(key, ts) {
+          localStorage.setItem(`srs_last_${key}_sync`, String(ts || Date.now()));
+        }
+        
         async function pullAll() {
-          // Mark pulling
           window.srsSync.pulling = true; emitSync();
           window._syncFromCloud = true;
           try {
@@ -191,146 +194,215 @@
             if (!user?.user) return;
             const uid = user.user.id;
 
-            // --- CARDS (paginate; Supabase/PostgREST defaults to 1k rows) ---
-            const pageSize = 1000;
-            let from = 0;
-            let rows = [];
-            for (;;) {
-              const { data, error } = await client
-                .from('cards')
-                .select('*')
+            // ---------- CARDS (delta by updated_at) ----------
+            // Only changed since last sync; explicit columns only
+            // On first install, last=0 → ISO 1970, so you'll get a one-time "full" pull.
+            {
+              const last = getLastSync('cards');
+              const lastIso = new Date(last || 0).toISOString();
+              const pageSize = 1000;
+              let from = 0, rows = [];
+              let ok = true;
+              for (;;) {
+                const { data, error } = await client
+                  .from('cards')
+                  .select('id, user_id, ref, text, pack, srs_slow_bucket, srs_slow_next_due, srs_slow_updated_at, srs_fast_bucket, srs_fast_next_due, srs_fast_updated_at, order_in_pack, created_at, updated_at, deleted_at')
+                  .eq('user_id', uid)
+                  .gt('updated_at', lastIso) // strict 'gt' avoids re-pulling identical timestamps
+                  .order('updated_at', { ascending: true })
+                  .range(from, from + pageSize - 1);
+                if (error) { console.error('cards delta pull error:', error); ok = false; break; }
+                rows = rows.concat(data || []);
+                if (!data || data.length < pageSize) break;
+                from += pageSize;
+              }
+
+              if (rows.length) {
+                // Map server rows to your app card shape
+                const pulled = rows.map(r => ({
+                  id: r.id,
+                  ref: r.ref,
+                  text: r.text,
+                  pack: r.pack,
+                  srs: {
+                    slow: {
+                      bucket: r.srs_slow_bucket || '0D',
+                      nextDue: Number(r.srs_slow_next_due || 0),
+                      updatedAt: r.srs_slow_updated_at ? new Date(r.srs_slow_updated_at).getTime() : 0,
+                      ease: 2.5, reps: 0, lapses: 0, intervalDays: 0, leech: false,
+                    },
+                    fast: {
+                      bucket: r.srs_fast_bucket || (r.srs_slow_bucket || '0D'),
+                      nextDue: Number(r.srs_fast_next_due || r.srs_slow_next_due || 0),
+                      updatedAt: r.srs_fast_updated_at
+                        ? new Date(r.srs_fast_updated_at).getTime()
+                        : (r.srs_slow_updated_at ? new Date(r.srs_slow_updated_at).getTime() : 0),
+                      ease: 2.5, reps: 0, lapses: 0, intervalDays: 0, leech: false,
+                    },
+                  },
+                  order: r.order_in_pack || undefined,
+                  createdAt: r.created_at ? new Date(r.created_at).getTime() : 0,
+                  updatedAt: r.updated_at ? new Date(r.updated_at).getTime() : 0,
+                  deletedAt: r.deleted_at ? new Date(r.deleted_at).getTime() : null,
+                }));
+
+                // Merge by id into local; drop if deleted
+                const local = getState().cards || [];
+                const byId = new Map(local.map(c => [c.id, c]));
+                for (const r of pulled) {
+                  if (r.deletedAt) {
+                    byId.delete(r.id);
+                  } else {
+                    const cur = byId.get(r.id);
+                    if (!cur || (r.updatedAt >= (cur.updatedAt || 0))) {
+                      byId.set(r.id, r);
+                    }
+                  }
+                }
+                const merged = Array.from(byId.values());
+                setCardsLocal(merged);
+              }
+              if (ok) {
+                if (rows.length) {
+                  const maxUpdated = Math.max(
+                    ...rows.map(r => r.updated_at ? new Date(r.updated_at).getTime() : 0)
+                  );
+                  if (Number.isFinite(maxUpdated) && maxUpdated > 0) {
+                    setLastSync('cards', maxUpdated);
+                  } else {
+                    setLastSync('cards', Date.now());
+                  }
+                } else {
+                  setLastSync('cards', Date.now());
+                }
+              }
+            }
+
+            // ---------- SETTINGS (delta by updated_at; explicit columns) ----------
+            {
+              const last = getLastSync('settings');
+              const lastIso = new Date(last || 0).toISOString();
+
+              const { data: rows, error } = await client
+                .from('settings')
+                .select('session_target, show_first_n_words, shuffle, daily_cap_slow, daily_cap_fast, jitter_pct, schema_version, mode, updated_at')
                 .eq('user_id', uid)
-                .order('created_at', { ascending: true })
-                .range(from, from + pageSize - 1);
-              if (error) { console.error(error); return; }
-              rows = rows.concat(data || []);
-              if (!data || data.length < pageSize) break; // last page
-              from += pageSize;
-            }
-            const pulledCards = (rows || []).map(r => ({
-            id: r.id,
-            ref: r.ref,
-            text: r.text,
-            pack: r.pack,
-            srs: {
-              slow: {
-                bucket: r.srs_slow_bucket || '0D',
-                nextDue: Number(r.srs_slow_next_due || 0),
-                updatedAt: r.srs_slow_updated_at ? new Date(r.srs_slow_updated_at).getTime() : 0,
-                ease: 2.5, reps: 0, lapses: 0, intervalDays: 0, leech: false,
-              },
-              fast: {
-                bucket: r.srs_fast_bucket || (r.srs_slow_bucket || '0D'),
-                nextDue: Number(r.srs_fast_next_due || r.srs_slow_next_due || 0),
-                updatedAt: r.srs_fast_updated_at ? new Date(r.srs_fast_updated_at).getTime()
-                                                  : (r.srs_slow_updated_at ? new Date(r.srs_slow_updated_at).getTime() : 0),
-                ease: 2.5, reps: 0, lapses: 0, intervalDays: 0, leech: false,
-              },
-            },
-            order: r.order_in_pack || undefined,
-            createdAt: new Date(r.created_at).getTime(),
-            updatedAt: new Date(r.updated_at).getTime(),
-            deletedAt: r.deleted_at ? new Date(r.deleted_at).getTime() : null,
-          }));
+                .gt('updated_at', lastIso)                // strict gt for cursoring
+                .order('updated_at', { ascending: false }) // newest first
+                .limit(1);
 
-          // Merge with local, but treat "missing on server" as deleted.
-          // Keep whichever copy (local vs remote) is fresher *only for ids the server still has*.
-          const local = getState().cards || [];
-          const localById = new Map(local.map(c => [c.id, c]));
-
-          const merged = [];
-          for (const r of pulledCards) {
-            const l = localById.get(r.id);
-            // If no local or remote is fresher/equal, use remote; otherwise keep local
-            merged.push(!l || r.updatedAt >= (l.updatedAt || 0) ? r : l);
-          }
-          // Anything in local that's not on the server is considered deleted → drop it.
-          setCardsLocal(merged.filter(c => !c.deletedAt));
-
-          // --- SETTINGS ---
-          const { data: s, error: e2 } = await client
-            .from('settings')
-            .select('*')
-            .eq('user_id', uid)
-            .maybeSingle();
-
-            if (!e2 && s) {
-              setSettingsLocal({
-                sessionTarget: s.session_target ?? 50,
-                mode: (s.mode === 'full' ? 'review' : (s.mode ?? 'recognition')),
-                showFirstNWords: s.show_first_n_words ?? 6,
-                shuffle: s.shuffle ?? true,
-                dailyCapSlow: s.daily_cap_slow ?? 60,
-                dailyCapFast: s.daily_cap_fast ?? 200,
-                jitterPct: s.jitter_pct ?? 0.1,
-                schemaVersion: s.schema_version ?? 1,
-              });
-            }
-
-            // --- HISTORY (last 30 days, capped) ---
-            const sinceIso = new Date(Date.now() - 30*24*60*60*1000).toISOString();
-            const { data: hrows, error: eh } = await client
-              .from('history')
-              .select('*')
-              .eq('user_id', uid)
-              .gte('ts', sinceIso)
-              .order('ts', { ascending: false })
-              .limit(3000);
-
-            if (!eh && hrows) {
-              const pulled = (hrows || []).map(r => ({
-                id: r.id,
-                cardId: r.card_id,
-                pack: r.pack,
-                ref: r.ref,
-                mode: r.mode,            // 'fast' | 'slow'
-                fromBucket: r.from_bucket,
-                toBucket: r.to_bucket,
-                ts: new Date(r.ts).getTime(),
-              }));
-
-              const localHist = Array.isArray(getState().history) ? getState().history : [];
-              const map = new Map(localHist.map(x => [x.id, x]));
-              for (const r of pulled) {
-                const l = map.get(r.id);
-                if (!l || r.ts > (l.ts || 0)) map.set(r.id, r);
+              const s = rows?.[0];
+              if (!error && s) {
+                setSettingsLocal({
+                  sessionTarget: s.session_target ?? 50,
+                  mode: (s.mode === 'full' ? 'review' : (s.mode ?? 'recognition')),
+                  showFirstNWords: s.show_first_n_words ?? 6,
+                  shuffle: s.shuffle ?? true,
+                  dailyCapSlow: s.daily_cap_slow ?? 60,
+                  dailyCapFast: s.daily_cap_fast ?? 200,
+                  jitterPct: s.jitter_pct ?? 0.1,
+                  schemaVersion: s.schema_version ?? 1,
+                });
+                const t = s.updated_at ? new Date(s.updated_at).getTime() : Date.now();
+                setLastSync('settings', t);
               }
-              const merged = Array.from(map.values())
-                .filter(x => x.ts >= Date.now() - 30*24*60*60*1000) // keep 30d window
-                .sort((a,b) => b.ts - a.ts)
-                .slice(0, 3000);
-
-              setHistoryLocal(merged);
+              // If no newer row, leave settings + lastSync unchanged.
             }
 
-            // --- GOAL CAPS (all rows, or cap to recent) ---
-            const { data: gcRows, error: egc } = await client
-              .from('goal_caps')
-              .select('*')
-              .eq('user_id', uid)
-              .order('day', { ascending: false })
-              .limit(2000); // plenty for multiple years
+            // ---------- HISTORY (append since last ts; explicit columns) ----------
+            {
+              // Start from last seen ms; default to 30d window on first run
+              const lastTs = getLastSync('history');
+              let cursorIso =
+                lastTs > 0
+                  ? new Date(lastTs).toISOString()
+                  : new Date(Date.now() - 30*24*60*60*1000).toISOString();
 
-            if (!egc && gcRows) {
-              // Merge: server overrides the same day keys; keep any local-only days
-              const localCap = getState().capLog || {};
-              const mergedCap = { ...localCap };
-              for (const r of gcRows) {
-                const dayKey = new Date(r.day).toISOString().slice(0,10); // YYYY-MM-DD
-                mergedCap[dayKey] = { slow: r.cap_slow|0, fast: r.cap_fast|0 };
+              let all = [];
+              let ok = true;
+
+              for (;;) {
+                const { data, error } = await client
+                  .from('history')
+                  .select('id, card_id, pack, ref, mode, from_bucket, to_bucket, ts')
+                  .eq('user_id', uid)
+                  .gt('ts', cursorIso)                 // strict 'gt' for cursoring
+                  .order('ts', { ascending: true })
+                  .limit(1000);
+                if (error) { console.error('history delta pull error:', error); ok = false; break; }
+                if (!data || data.length === 0) break;
+
+                all = all.concat(data);
+                // advance cursor to the last ts we saw
+                cursorIso = data[data.length - 1].ts;
+                if (data.length < 1000) break;        // finished
               }
-              setCapLogLocal(mergedCap);
+
+              if (all.length) {
+                const pulled = all.map(r => ({
+                  id: r.id,
+                  cardId: r.card_id,
+                  pack: r.pack,
+                  ref: r.ref,
+                  mode: r.mode,
+                  fromBucket: r.from_bucket,
+                  toBucket: r.to_bucket,
+                  ts: new Date(r.ts).getTime(),
+                }));
+
+                // merge newest-by-id, keep last 30d, cap 3000
+                const localHist = Array.isArray(getState().history) ? getState().history : [];
+                const map = new Map(localHist.map(x => [x.id, x]));
+                for (const r of pulled) {
+                  const cur = map.get(r.id);
+                  if (!cur || r.ts > (cur.ts || 0)) map.set(r.id, r);
+                }
+                const merged = Array.from(map.values())
+                  .filter(x => x.ts >= Date.now() - 30*24*60*60*1000)
+                  .sort((a,b) => b.ts - a.ts)
+                  .slice(0, 3000);
+
+                setHistoryLocal(merged);
+
+                const maxTs = Math.max(...pulled.map(p => p.ts));
+                if (Number.isFinite(maxTs) && ok) setLastSync('history', maxTs);
+              }
+            }
+
+            // ---------- GOAL CAPS (delta by updated_at; explicit columns) ----------
+            {
+              const last = getLastSync('goal_caps');
+              const lastIso = new Date(last || 0).toISOString();
+              const { data: gcRows, error } = await client
+                .from('goal_caps')
+                .select('day, cap_slow, cap_fast, updated_at')
+                .eq('user_id', uid)
+                .gt('updated_at', lastIso) // strict gt for cursoring
+                .order('updated_at', { ascending: true })
+                .limit(2000);
+
+              if (!error && gcRows?.length) {
+                const localCap = getState().capLog || {};
+                const mergedCap = { ...localCap };
+                for (const r of gcRows) {
+                  const dayKey = new Date(r.day).toISOString().slice(0,10);
+                  mergedCap[dayKey] = { slow: r.cap_slow|0, fast: r.cap_fast|0 };
+                }
+                setCapLogLocal(mergedCap);
+                const maxUpdated = Math.max(
+                  ...gcRows.map(r => r.updated_at ? new Date(r.updated_at).getTime() : 0)
+                );
+                setLastSync('goal_caps', Number.isFinite(maxUpdated) && maxUpdated > 0 ? maxUpdated : Date.now());
+              }
             }
 
             // Single “pull complete” signal
             window.dispatchEvent(new CustomEvent('srs:pulled', { detail: { entity: 'all', at: Date.now() }}));
 
           } catch (err) {
-            console.error('pullAll failed:', err);
+            console.error('pullAll (delta) failed:', err);
           } finally {
-            // Release the guard after a tick so app can apply state without triggering push
             setTimeout(() => { window._syncFromCloud = false; }, 150);
-            // Done pulling
             window.srsSync.pulling = false;
             window.srsSync.lastPullAt = Date.now();
             emitSync();
@@ -340,8 +412,11 @@
         // expose a manual pull as well
         window.pullSRS = pullAll;
 
-        // Expose a debounced scheduler for auto-push (used by app.jsx)
-        window.schedulePush = debounce(() => window.pushSRS?.(), 1500);
+        let _opsSincePush = 0;
+        window.schedulePush = () => {
+          _opsSincePush += 1;
+          if (_opsSincePush >= 25) { _opsSincePush = 0; window.pushSRS?.(); }
+        };
 
         // Try to flush before tab closes or app backgrounds (mobile)
         function flushNow() {
@@ -359,6 +434,7 @@
 
         // Expose push function (guarded)
         window.pushSRS = async function pushAll() {
+          let hadError = false;
           // Mark pushing
           window.srsSync.pushing = true; emitSync();
           window._pushing = true;
@@ -429,7 +505,9 @@
                 if (error) {
                   // If you ever see a unique violation on (user_id, content_hash), it means
                   // you have two different card IDs with identical ref|text. Merge or delete duplicates.
-                  return showErr(error, "Cards push failed");
+                  hadError = true;
+                  showErr(error, "Cards push failed");
+                  break;
                 }
               }
             }
@@ -447,7 +525,7 @@
                 schema_version: settings?.schemaVersion ?? 1,
                 updated_at: nowIso,
               });
-              if (error) return showErr(error, "Settings push failed");
+              if (error) { hadError = true; showErr(error, "Settings push failed"); }
             }
 
             // --------- HISTORY (BATCHED UPSERT) ----------
@@ -471,7 +549,7 @@
 
               for (const part of chunk(rows, 500)) {
                 const { error } = await client.from('history').upsert(part, { onConflict: 'id' });
-                if (error) return showErr(error, "History push failed");
+                if (error) { hadError = true; showErr(error, "History push failed"); break; }
               }
             }
 
@@ -495,56 +573,33 @@
                   const { error } = await client
                     .from('goal_caps')
                     .upsert(chunkRows, { onConflict: 'user_id,day' });
-                  if (error) return showErr(error, "Goal caps push failed");
+                  if (error) { hadError = true; showErr(error, "Goal caps push failed"); break; }
                 }
               }
             }
 
           } catch (err) {
+            hadError = true;
             showErr(err, "Push failed");
           } finally {
-            // If we didn't error, clear dirty flags
-            if (!window.srsSync.pushing) {
-              window._dirty = { cards:false, settings:false, history:false, capLog:false };
-            }
             window._pushing = false;
             window.srsSync.pushing = false;
+            // If we didn't error, clear dirty flags now
+            if (!hadError) {
+              window._dirty = { cards:false, settings:false, history:false, capLog:false };
+              _opsSincePush = 0; // reset the burst counter after a successful push
+            }
             window.srsSync.lastPushAt = Date.now();
             emitSync();
           }
         };
 
         async function startRealtime(uid) {
-          const schedulePull = (function () {
-            let t = null;
-            return () => {
-              if (window._pushing) return;
-              clearTimeout(t);
-              t = setTimeout(() => pullAll(), 250); // batch events
-            };
-          })();
-
-          // Unsubscribe existing
-          if (channel) { try { await client.removeChannel(channel); } catch {} channel = null; }
-          // Subscribe to user-scoped changes
-          channel = client.channel('realtime:cards_settings_history')
-            .on('postgres_changes',
-              { event: '*', schema: 'public', table: 'cards', filter: `user_id=eq.${uid}` },
-              () => schedulePull())
-            .on('postgres_changes',
-              { event: '*', schema: 'public', table: 'history', filter: `user_id=eq.${uid}` },
-              () => schedulePull())
-            .subscribe((status) => { console.log('Realtime status:', status); });
-
-          // Poll as a safety net (missed events / offline resume)
-          if (poller) clearInterval(poller);
-          poller = setInterval(() => { if (!window._pushing) pullAll(); }, 180000); // 3 min
+          // Free-tier: no realtime to avoid quota burn.
+          return;
         }
 
-        async function stopRealtime() {
-          if (poller) { clearInterval(poller); poller = null; }
-          if (channel) { try { await client.removeChannel(channel); } catch {} channel = null; }
-        }
+        async function stopRealtime() { /* free-tier: no realtime */ }
       }
 
       function boot() {
