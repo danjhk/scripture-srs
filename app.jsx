@@ -258,12 +258,12 @@ function previewText(text, words = 6) {
 function todayKey() { return new Date().toISOString().slice(0, 10); }
 function isoDay(dateLike) {
   const d = new Date(dateLike);
-  const z = new Date(Date.UTC(d.getFullYear(), d.getMonth(), d.getDate()));
+  const z = new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate()));
   return z.toISOString().slice(0, 10);
 }
 function startOfWeekISO(dt) {
   const d = new Date(dt);
-  const w = (d.getDay() + 6) % 7;
+  const w = (d.getUTCDay() + 6) % 7;            // ← use UTC day
   d.setUTCDate(d.getUTCDate() - w);
   d.setUTCHours(0,0,0,0);
   return d.toISOString().slice(0,10);
@@ -412,7 +412,6 @@ function lcsMatchMask(aKeys, bKeys) {
   return mask;
 }
 
-// Main diff that returns runs over TYPED RAW string only
 // Main diff that returns runs over TYPED RAW string only
 function diffCharsLCS(typedRaw, targetRaw, opts = defaultWritingOptions()) {
   const T = normalizeForCompare(typedRaw, opts);
@@ -583,12 +582,16 @@ function App() {
     }
     const onPulled = () => applyPulled();
     const onStorage = (e) => { if (e.key === LS_KEY) applyPulled(); };
+    function onVisible(){
+      if (document.visibilityState === 'visible' && window.pullSRS) window.pullSRS();
+    }    
     window.addEventListener('srs:pulled', onPulled);
     window.addEventListener('storage', onStorage);
-    document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible' && window.pullSRS) window.pullSRS(); });
+    document.addEventListener('visibilitychange', onVisible);
     return () => {
       window.removeEventListener('srs:pulled', onPulled);
       window.removeEventListener('storage', onStorage);
+      document.removeEventListener('visibilitychange', onVisible);
     };
   }, []);
 
@@ -744,6 +747,50 @@ function App() {
     if (settings.mode === "writing") setWritingSubmitted(false);
   }
 
+  // NEW: delete selected cards (server attempt + local removal, with confirmation)
+  async function deleteSelectedCardsNow(ids) {
+    if (!ids?.length) return;
+    if (!confirm(`Delete ${ids.length} selected card(s) now? This cannot be undone.`)) return;
+
+    const idsSet = new Set(ids);
+    let serverTried = false;
+
+    try {
+      const client = window.supabaseClient;
+      if (client) {
+        const { data: u } = await client.auth.getUser();
+        const uid = u?.user?.id;
+        if (uid) {
+          serverTried = true;
+          const { error } = await client
+            .from("cards")
+            .delete()
+            .eq("user_id", uid)
+            .in("id", ids);
+          if (error) {
+            console.error("Server delete failed:", error);
+            alert("Server delete failed (kept local delete): " + error.message);
+          }
+        }
+      }
+    } catch (e) {
+      console.warn("Server delete skipped/failed:", e);
+    }
+
+    // Always remove locally
+    setCards(prev => prev.filter(c => !idsSet.has(c.id)));
+    // Also remove from any active manual queue
+    setSessionQueue(prev => prev.filter(id => !idsSet.has(id)));
+
+    // Mark local change; other entities can push later
+    window.markDirty?.('cards');
+
+    // Best-effort pull to converge across devices
+    try { if (typeof window.pullSRS === 'function') window.pullSRS(); } catch {}
+
+    alert(`Deleted ${idsSet.size} card(s)${serverTried ? " (server + local)" : " (local only)"}.`);
+  }
+
   async function importTxtFiles(files) {
     const imported = [];
     for (const f of files) {
@@ -769,13 +816,15 @@ function App() {
   }
 
   function exportJson() {
-    const blob = new Blob([JSON.stringify({ cards, settings }, null, 2)], { type: "application/json" });
+    const blob = new Blob([JSON.stringify({ cards, settings, history, daily, capLog }, null, 2)], { type: "application/json" });
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
     a.href = url;
     a.download = `scripture_srs_backup_${new Date().toISOString().slice(0, 10)}.json`;
+    document.body.appendChild(a);
     a.click();
-    URL.revokeObjectURL(url);
+    document.body.removeChild(a);
+    setTimeout(() => URL.revokeObjectURL(url), 1000); // <- small delay
   }
 
   function importJson(file) {
@@ -783,19 +832,48 @@ function App() {
     reader.onload = () => {
       try {
         const data = JSON.parse(String(reader.result));
-        if (Array.isArray(data.cards)) setCards(data.cards);
-        if (data.settings) setSettings({ ...defaultSettings(), ...data.settings });
+
+        // Cards: migrate & re-order
+        if (Array.isArray(data.cards)) {
+          const migrated = migrateAllCards(data.cards);
+          setCards(migrated);
+        }
+
+        // Settings: upgrade schema & keep current mode if you want
+        if (data.settings) {
+          const upgraded = upgradeSettings(data.settings);
+          setSettings(prev => ({ ...upgraded, mode: prev.mode }));
+        }
+
+        // NEW: restore progress data if present
+        if (Array.isArray(data.history)) setHistory(data.history);
+        if (data.daily) setDaily(data.daily);
+        if (data.capLog) setCapLog(data.capLog);
+        // after successful import:
+        window.markDirty?.('cards', 'settings', 'history', 'daily', 'capLog');
+
         alert("Backup imported.");
-      } catch { alert("Invalid JSON."); }
+      } catch {
+        alert("Invalid JSON.");
+      }
     };
     reader.readAsText(file);
   }
 
   function editCurrentCard(newRef, newText) {
     if (!currentCard) return;
-    const newId = hashString(`${currentCard.pack}|${newRef}|${newText}`);
-    const updated = { ...currentCard, ref: newRef, text: newText, id: newId, updatedAt: now() };
-    setCards((prev) => prev.map((c) => (c.id === currentCard.id ? updated : c)));
+
+    // Keep the SAME id — do NOT recompute it
+    const updated = {
+      ...currentCard,
+      ref: newRef,
+      text: newText,
+      // helpful but optional: keep a local contentHash for future logic
+      contentHash: hashString(`${newRef}|${newText}`),
+      updatedAt: now(),
+    };
+
+    setCards(prev => prev.map(c => (c.id === currentCard.id ? updated : c)));
     window.markDirty?.('cards');
   }
 
@@ -1049,7 +1127,6 @@ function App() {
             setCompleted(0);
             setSessionStart(now());
           }}
-          /* NEW: queue selected verses directly into Writing mode */
           onStartWriting={(ids) => {
             if (!ids?.length) return;
             setSettings(s => ({ ...s, mode: "writing" }));
@@ -1058,6 +1135,8 @@ function App() {
             setSessionStart(now());
             setWritingSubmitted(false);
           }}
+          /* NEW: delete selected now */
+          onDeleteSelected={(ids) => deleteSelectedCardsNow(ids)}
         />
 
         {/* History */}
@@ -1148,16 +1227,17 @@ function App() {
 ========================= */
 
 function CardFrontRecognition({ card, words }) {
-  const firstWords = React.useMemo(
-    () => card.text.split(/\s+/).slice(0, words).join(" "),
-    [card.text, words]
-  );
+  const { firstWords, total } = React.useMemo(() => {
+    const parts = card.text.split(/\s+/);
+    return { firstWords: parts.slice(0, words).join(" "), total: parts.length };
+  }, [card.text, words]);
+
   return (
     <div>
       <div className="text-gray-700 text-sm">{card.ref}</div>
       <div className="mt-1 text-2xl">
         {firstWords}
-        {card.text.split(/\s+/).length > words ? " …" : ""}
+        {total > words ? " …" : ""}
       </div>
     </div>
   );
@@ -1405,74 +1485,6 @@ function EditableArea({ card, onSave }) {
   );
 }
 
-// PackManager wrapper (your logic unchanged; moved to keep App readable)
-function PackManagerContainer({ cards, setCards, filterPack, setFilterPack }) {
-  const [open, setOpen] = useState(false);
-  return (
-    <>
-      <button className="hidden" onClick={() => setOpen(true)}></button>
-      {open && (
-        <PackManager
-          cards={cards}
-          onClose={() => setOpen(false)}
-          onDelete={async (packsToDelete) => {
-            const norm = (s) => {
-              const raw = String(s ?? "");
-              const n = typeof raw.normalize === "function" ? raw.normalize("NFC") : raw;
-              return n.replace(/\u00A0/g, " ").replace(/\s+/g, " ").trim().toLowerCase();
-            };
-            const delNorm = new Set(packsToDelete.map(norm));
-            try {
-              const client = window.supabaseClient;
-              if (client) {
-                const { data: u } = await client.auth.getUser();
-                const uid = u?.user?.id;
-                if (uid) {
-                  const { error } = await client
-                    .from("cards")
-                    .delete()
-                    .eq("user_id", uid)
-                    .in("pack", packsToDelete);
-                  if (error) { console.error("Server delete failed:", error); alert("Server delete failed: " + error.message); }
-                }
-              }
-            } catch (e) { console.warn("Delete on server skipped/failed:", e); }
-            setCards((prev) => {
-              const before = prev.length;
-              const next = prev.filter((c) => !delNorm.has(norm(c.pack)));
-              const removed = before - next.length;
-              if (removed === 0) alert("No cards matched those pack names.");
-              else alert(`Deleted ${removed} card(s) from ${delNorm.size} pack(s).`);
-              return next;
-            });
-            if (filterPack !== "ALL" && delNorm.has(norm(filterPack))) setFilterPack("ALL");
-            setOpen(false);
-          }}
-          onExport={(packsToExport) => {
-            const norm = (s) => {
-              const raw = String(s ?? "");
-              const n = typeof raw.normalize === "function" ? raw.normalize("NFC") : raw;
-              return n.replace(/\u00A0/g, " ").replace(/\s+/g, " ").trim().toLowerCase();
-            };
-            const exp = new Set(packsToExport.map(norm));
-            const subset = cards.filter((c) => exp.has(norm(c.pack)));
-            if (subset.length === 0) { alert("No cards found for the selected packs."); return; }
-            const blob = new Blob([JSON.stringify({ cards: subset, settings: defaultSettings() }, null, 2)], { type: "application/json" });
-            const url = URL.createObjectURL(blob);
-            const a = document.createElement("a");
-            a.href = url;
-            a.download = `scripture_srs_packs_${new Date().toISOString().slice(0, 10)}.json`;
-            document.body.appendChild(a); a.click(); document.body.removeChild(a);
-            setTimeout(() => URL.revokeObjectURL(url), 1000);
-          }}
-        />
-      )}
-      {/* expose open button through your existing "Manage Packs" button in header */}
-      <script>{/* no-op */}</script>
-    </>
-  );
-}
-
 function PackManager({ cards, onClose, onDelete, onExport }) {
   const summary = useMemo(() => {
     const m = new Map();
@@ -1590,7 +1602,8 @@ function VersesView({
   scheduleKey,
   onChangeScheduleKey,
   onStartManual,
-  /* NEW */ onStartWriting,
+  onStartWriting,
+  /* NEW */ onDeleteSelected,
 }) {
   // Filter by pack
   const list = useMemo(() => {
@@ -1651,6 +1664,19 @@ function VersesView({
           onClick={() => onStartWriting(selectedIdsOrdered)}
         >
           Write selected now
+        </button>
+        {/* NEW: Delete selected now (asks for confirmation in handler) */}
+        <button
+          className={`px-3 py-2 rounded-xl ${checked.size ? "bg-rose-600 text-white" : "bg-gray-200 text-gray-400"}`}
+          disabled={!checked.size}
+          onClick={async () => {
+            if (!checked.size) return;
+            await onDeleteSelected?.(selectedIdsOrdered);
+            setChecked(new Set()); // clear selection after delete
+          }}
+          title="Delete the selected cards immediately"
+        >
+          Delete selected now
         </button>
       </div>
 

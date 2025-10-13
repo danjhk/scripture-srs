@@ -68,7 +68,7 @@
         const client = window.supabase.createClient(
           window.SUPABASE_URL,
           window.SUPABASE_ANON,
-          { auth: { persistSession: true, detectSessionInUrl: true } }
+          { auth: { persistSession: true, detectSessionInUrl: true }, realtime: { enabled: false } }
         );
         window.supabaseClient = client;
         let didInitialPull = false;
