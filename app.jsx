@@ -100,20 +100,27 @@ function parseLineToCard(line, fileName) {
 }
 
 function saveState(state) {
-  localStorage.setItem(LS_KEY, JSON.stringify(state));
+  // Include test (if present) so we don't lose progress on pull/push writes
+  const prev = JSON.parse(localStorage.getItem(LS_KEY) || "{}");
+  const next = { ...prev, ...state };
+  localStorage.setItem(LS_KEY, JSON.stringify(next));
 }
 function loadState() {
   const raw = localStorage.getItem(LS_KEY);
-  if (!raw) return { cards: [], settings: defaultSettings(), capLog: {} };
+  if (!raw) return { cards: [], settings: defaultSettings(), capLog: {}, history: [], daily: { key: todayKey(), slow:0, fast:0 }, test: defaultTestState() };
   try {
     const parsed = JSON.parse(raw);
     if (!parsed.settings) parsed.settings = defaultSettings();
     if (!parsed.capLog) parsed.capLog = {};
+    if (!parsed.history) parsed.history = [];
+    if (!parsed.daily) parsed.daily = { key: todayKey(), slow:0, fast:0 };
+    parsed.test = coerceTestState(parsed);
     return parsed;
   } catch {
-    return { cards: [], settings: defaultSettings(), capLog: {} };
+    return { cards: [], settings: defaultSettings(), capLog: {}, history: [], daily: { key: todayKey(), slow:0, fast:0 }, test: defaultTestState() };
   }
 }
+
 
 // --- Migration & ordering ---
 
@@ -274,6 +281,24 @@ function yearKey(dt) { return String(new Date(dt).getUTCFullYear()); }
 
 // --- Phase 5: keyboard shortcuts ---
 const SHORTCUT_MAP = { a: "Again", "1": "1D", "3": "3D", "7": "7D", "0": "30D", "9": "90D" };
+
+/* ===========================================
+   TEST mode — local-only state & helpers
+   Persisted in localStorage inside LS_KEY blob
+=========================================== */
+function defaultTestState() {
+  return { active: false, pack: "ALL", queue: [], goodById: {}, startedAt: 0, total: 0 };
+}
+
+// Replace-safe: reads test from an already-parsed blob (or returns default)
+function coerceTestState(parsed) {
+  const t = (parsed && parsed.test) || {};
+  return {
+    ...defaultTestState(),
+    ...t,
+    goodById: t.goodById && typeof t.goodById === "object" ? t.goodById : {},
+  };
+}
 
 // --- NEW: tiny util to shuffle (Writing mode randomization) ---
 function shuffleInPlace(arr) {
@@ -529,6 +554,7 @@ function App() {
   // Needed by header & Advanced modal
   const [packManagerOpen, setPackManagerOpen] = useState(false);
   const [syncOpen, setSyncOpen] = useState(false);
+  const [test, setTest] = useState(defaultTestState());
   const fileInputRef = useRef(null);
 
   // NEW: writing state: whether current card has been submitted
@@ -559,14 +585,26 @@ function App() {
     const upgradedSettings = upgradeSettings(s.settings);
     const loadedHistory = Array.isArray(s.history) ? s.history : [];
     const loadedDaily = s.daily && s.daily.key === todayKey() ? s.daily : { key: todayKey(), slow: 0, fast: 0 };
+    const loadedTest = s.test || defaultTestState();
 
     setCards(migratedCards);
     setSettings(upgradedSettings);
     setHistory(loadedHistory);
     setDaily(loadedDaily);
     setCapLog(s.capLog || {});
+    setTest(loadedTest);
+    if (loadedTest.active) setFilterPack(loadedTest.pack);
   }, []);
-  useEffect(() => { saveState({ cards, settings, history, daily, capLog }); }, [cards, settings, history, daily, capLog]);
+  useEffect(() => {
+    saveState({ cards, settings, history, daily, capLog, test });
+  }, [cards, settings, history, daily, capLog, test]);
+
+  useEffect(() => {
+    if (settings.mode === "test" && test.active) {
+      setCompleted(test.total - test.queue.length);
+      setSessionStart(test.startedAt || Date.now());
+    }
+  }, [settings.mode, test.active, test.total, test.queue.length]);
 
   // Apply pulled
   useEffect(() => {
@@ -652,29 +690,47 @@ function App() {
   // - Writing: always from sessionQueue
   // - Others: from sessionQueue if present else dueCards[0]
   const currentCard = useMemo(() => {
+    // Test mode uses its own queue, not sessionQueue
+    if (settings.mode === "test") {
+      if (!test.active || test.queue.length === 0) return null;
+      const id = test.queue[0];
+      return cards.find(c => c.id === id) || null;
+    }
+    // SessionQueue (manual / writing / normal)
     if (sessionQueue.length > 0) {
       const id = sessionQueue[0];
       return cards.find((c) => c.id === id) || null;
     }
-    if (settings.mode === "writing") return null; // require Start Session / or manual write selection
+    if (settings.mode === "writing") return null; // require Start Session / manual
     return dueCards[0];
-  }, [sessionQueue, cards, dueCards, settings.mode]);
+  }, [sessionQueue, cards, dueCards, settings.mode, test.active, test.queue]);
 
   // Keyboard shortcuts (DISABLE in writing mode) — moved below currentCard
   useEffect(() => {
     function onKey(e) {
       const tag = (e.target && e.target.tagName) ? e.target.tagName.toLowerCase() : "";
       if (tag === "input" || tag === "textarea" || e.target.isContentEditable) return;
+
+      // TEST mode: A=Again, G=Good
+      if (settings.mode === "test") {
+        const k = (e.key || "").toLowerCase();
+        if (k === "a") { e.preventDefault(); handleTestAgain(); }
+        if (k === "g") { e.preventDefault(); handleTestGood(); }
+        return;
+      }
+
+      // Writing: disable SRS shortcuts
       if (settings.mode === "writing") return;
+
+      // Recognition/Review shortcuts
       const lbl = SHORTCUT_MAP[e.key.toLowerCase?.() || e.key];
-      if (!lbl) return;
-      if (!currentCard) return;
+      if (!lbl || !currentCard) return;
       e.preventDefault();
       handleGrade(lbl);
     }
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [currentCard, settings.mode]);
+  }, [currentCard, settings.mode, test.active, test.queue]);
 
   // Reset "submitted" when card/mode changes
   useEffect(() => { setWritingSubmitted(false); }, [settings.mode, currentCard?.id]);
@@ -688,6 +744,11 @@ function App() {
   // Start session
   async function startSession() {
     try { if (typeof window.pullSRS === 'function') await window.pullSRS(); } catch {}
+    // TEST mode: initialize or resume Test queue; do NOT touch SRS buckets or history
+    if (settings.mode === "test") {
+      startTestSession();
+      return;
+    }
     setSessionStart(now());
     setCompleted(0);
 
@@ -702,6 +763,102 @@ function App() {
     // unchanged: freeze due list for other modes
     setSessionQueue(dueCards.map(c => c.id));
   }
+
+  // Build a randomized id-queue from current cards and selected pack
+  function buildTestQueue(allCards, pack = "ALL") {
+    const pool = (pack && pack !== "ALL") ? allCards.filter(c => c.pack === pack) : allCards.slice();
+    const ids = pool.map(c => c.id);
+    return shuffleInPlace(ids);
+  }
+
+  // Resume or initialize a Test run for the current Filter Pack
+  function startTestSession() {
+    const pack = filterPack; // respect the UI filter
+    // If we need to (re)seed
+    if (!test.active || test.pack !== pack || !Array.isArray(test.queue) || test.queue.length === 0) {
+      const q = buildTestQueue(cards, pack);
+      if (q.length === 0) {
+        // nothing to test—reset counters and bail
+        setTest({ ...defaultTestState(), active: false, pack });
+        setCompleted(0);
+        setSessionStart(0);
+        return;
+      }
+      const next = { active: true, pack, queue: q, goodById: {}, startedAt: Date.now(), total: q.length };
+      setTest(next);
+      setCompleted(0);
+      setSessionStart(Date.now());
+      return;
+    }
+    // Resume
+    setCompleted(test.total - test.queue.length);
+    setSessionStart(test.startedAt || Date.now());
+  }
+
+  function handleTestGood() {
+    if (!test.active || test.queue.length === 0) return;
+    const [head, ...rest] = test.queue;
+    const next = {
+      ...test,
+      queue: rest,
+      goodById: { ...test.goodById, [head]: true },
+      active: rest.length === 0 ? false : test.active,
+    };
+    setTest(next);
+    setCompleted((x) => x + 1); // only count finished items
+  }
+
+  function handleTestAgain() {
+    if (!test.active || test.queue.length === 0) return;
+    const [head, ...rest] = test.queue;
+    const next = { ...test, queue: [...rest, head] };
+    setTest(next);
+    // 'Again' does NOT increment completed
+  }
+
+  function resetTestSession() {
+    if (!confirm("Reset Test progress for this pack? All verses go back to 'Again' and queue is reshuffled.")) return;
+    const pack = test.active ? test.pack : filterPack;
+    const q = buildTestQueue(cards, pack);
+    if (q.length === 0) {
+      setTest({ ...defaultTestState(), active: false, pack });
+      setCompleted(0);
+      setSessionStart(0);
+      alert("No verses in this pack to test.");
+      return;
+    }
+    const next = { active: true, pack, queue: q, goodById: {}, startedAt: Date.now(), total: q.length };
+    setTest(next);
+    setCompleted(0);
+    setSessionStart(Date.now());
+  }
+
+  // Keep test queue valid if cards change (e.g., deletions/imports)
+  useEffect(() => {
+    if (!test.active) return;
+    const valid = new Set(cards.map(c => c.id));
+    const filteredQ = test.queue.filter(id => valid.has(id));
+    const filteredGood = Object.fromEntries(
+      Object.entries(test.goodById).filter(([id]) => valid.has(id))
+    );
+    const newTotal = filteredQ.length + Object.keys(filteredGood).length;
+    const newActive = filteredQ.length > 0; // deactivate if everything was deleted
+
+    if (
+      filteredQ.length !== test.queue.length ||
+      Object.keys(filteredGood).length !== Object.keys(test.goodById).length ||
+      newTotal !== test.total ||
+      newActive !== test.active
+    ) {
+      setTest(prev => ({
+        ...prev,
+        queue: filteredQ,
+        goodById: filteredGood,
+        total: newTotal,
+        active: newActive
+      }));
+    }
+  }, [cards]); // eslint-disable-line react-hooks/exhaustive-deps
 
   function popQueueIfHeadIs(id) {
     setSessionQueue((q) => (q.length && q[0] === id ? q.slice(1) : q));
@@ -890,7 +1047,9 @@ function App() {
           <div className="flex flex-wrap items-center gap-2 w-full sm:w-auto">
             <button className="px-3 py-2 rounded-xl bg-gray-200 shrink-0" onClick={() => setPackManagerOpen(true)}>Manage Packs</button>
             <div className="text-sm text-gray-600 min-w-0">
-              Due: {dueCards.length} | Done: {completed} | {sessionElapsedMin}m
+              {settings.mode === "test"
+                ? <>Test: left {test.queue.length} · done {test.total - test.queue.length} / {test.total} | {sessionElapsedMin}m</>
+                : <>Due: {dueCards.length} | Done: {completed} | {sessionElapsedMin}m</>}
             </div>
             {/* Sync chip (unchanged) */}
             {(() => {
@@ -916,13 +1075,15 @@ function App() {
         </header>
 
         {/* Daily goal status bar */}
-        <div className="text-xs text-gray-500">
-          Daily {settings.mode === "recognition" ? "FAST" : "SLOW"} goal:{" "}
-          {settings.mode === "recognition" ? todayCaps.fast : todayCaps.slow}
-          {" · "}done:{" "}
-          {settings.mode === "recognition" ? dailyReviewed.fast : dailyReviewed.slow}
-          {" · "}left: {dailyRemaining(settings.mode)}
-        </div>
+        {settings.mode !== "test" && (
+          <div className="text-xs text-gray-500">
+            Daily {settings.mode === "recognition" ? "FAST" : "SLOW"} goal:{" "}
+            {settings.mode === "recognition" ? todayCaps.fast : todayCaps.slow}
+            {" · "}done:{" "}
+            {settings.mode === "recognition" ? dailyReviewed.fast : dailyReviewed.slow}
+            {" · "}left: {dailyRemaining(settings.mode)}
+          </div>
+        )}
 
         {/* Settings */}
         <section className="rounded-2xl shadow p-4 bg-white grid gap-3 sm:grid-cols-4 items-end">
@@ -937,6 +1098,7 @@ function App() {
               <option value="review">Review (narrow, revealed)</option>
               {/* NEW: Writing mode option */}
               <option value="writing">Writing (slow)</option>
+              <option value="test">Test (random, 2-button)</option>
             </select>
           </div>
           <div>
@@ -969,17 +1131,34 @@ function App() {
         {/* Session Controls */}
         <section className="rounded-2xl shadow p-4 bg-white flex items-center justify-between gap-2">
           <div className="text-sm text-gray-600">
-            {settings.mode === "writing" ? "Writing session uses random order over the pack." : "Cards due now: "}{settings.mode === "writing" ? "" : dueCards.length}
+            {settings.mode === "writing"
+              ? "Writing session uses random order over the pack."
+              : "Cards due now: "}{settings.mode === "writing" ? "" : dueCards.length}
           </div>
           <div className="flex gap-2">
-            <button className="px-4 py-2 rounded-xl bg-indigo-600 text-white" onClick={startSession}>Start Session</button>
+            <button
+              className="px-4 py-2 rounded-xl bg-indigo-600 text-white"
+              onClick={startSession}
+            >
+              Start Session
+            </button>
+
+            {settings.mode === "test" && (
+              <button
+                className="px-4 py-2 rounded-xl bg-rose-100 text-rose-800"
+                onClick={resetTestSession}
+                title="Reset Test progress and reshuffle all verses for this pack"
+              >
+                Reset Test
+              </button>
+            )}
           </div>
         </section>
 
         {/* Review / Writing Card */}
         <section className="rounded-2xl shadow p-6 bg-white">
           {/* Manual queue banner */}
-          {sessionQueue.length > 0 && (
+          {settings.mode !== "test" && sessionQueue.length > 0 && (
             <div className="rounded-xl border p-3 mb-4 bg-amber-50 text-amber-900 flex items-center justify-between">
               <span>
                 Manual review queue active: {sessionQueue.length} verse{sessionQueue.length > 1 ? "s" : ""} remaining.
@@ -992,7 +1171,11 @@ function App() {
 
           {!currentCard ? (
             <div className="text-center text-gray-500">
-              {settings.mode === "writing" ? "Start a writing session (randomized) or choose verses from 'View Verses' → 'Write selected now'." : "No cards due. Great job!"}
+              {settings.mode === "writing"
+                ? "Start a writing session (randomized) or choose verses from 'View Verses' → 'Write selected now'."
+                : settings.mode === "test"
+                  ? (test.active ? "All done! Press Reset Test to restart." : "Press Start Session to begin Test.")
+                  : "No cards due. Great job!"}
             </div>
           ) : (
             <div className="space-y-4">
@@ -1001,8 +1184,8 @@ function App() {
                 <div className="text-xs text-gray-500">
                   Pack: {currentCard.pack}
                   {" · "}
-                  {currentCard?.order ? `${ordinal(currentCard.order)} Verse · ` : ""}
-                  {getActiveBucket(currentCard, settings.mode)}
+                  {currentCard?.order ? `${ordinal(currentCard.order)} Verse` : "Verse"}
+                  {settings.mode !== "test" && <> · {getActiveBucket(currentCard, settings.mode)}</>}
                 </div>
               ) : (
                 <div className="flex items-center justify-between text-xs text-gray-600">
@@ -1019,7 +1202,7 @@ function App() {
               <div className="text-lg font-semibold">
                 {settings.mode === "recognition" ? (
                   <CardFrontRecognition card={currentCard} words={settings.showFirstNWords} />
-                ) : settings.mode === "review" ? (
+                ) : (settings.mode === "review" || settings.mode === "test") ? (
                   <div><div className="text-gray-700 text-sm">{currentCard.ref}</div></div>
                 ) : (
                   <div className="text-gray-700 text-sm">{currentCard.ref}</div>
@@ -1029,7 +1212,9 @@ function App() {
               {/* Keyboard shortcuts note (hide for writing) */}
               {settings.mode !== "writing" && (
                 <div className="text-[11px] text-gray-500">
-                  Shortcuts: A (Again), 1, 3, 7, 0 (30D), 9 (90D).
+                  {settings.mode === "test"
+                    ? "Shortcuts (Test): A = Again, G = Good."
+                    : "Shortcuts: A (Again), 1, 3, 7, 0 (30D), 9 (90D)."}
                 </div>
               )}
 
@@ -1041,6 +1226,14 @@ function App() {
               )}
 
               {settings.mode === "review" && (
+                <div className="rounded-2xl border p-4 bg-gray-50 flex justify-center">
+                  <div className="text-base whitespace-pre-wrap break-words font-mono w-[25ch]">
+                    {currentCard.text}
+                  </div>
+                </div>
+              )}
+
+              {settings.mode === "test" && (
                 <div className="rounded-2xl border p-4 bg-gray-50 flex justify-center">
                   <div className="text-base whitespace-pre-wrap break-words font-mono w-[25ch]">
                     {currentCard.text}
@@ -1060,46 +1253,84 @@ function App() {
               )}
 
               {/* SRS buttons (desktop) – hidden until Submit in writing */}
-              {showGradeButtons && (
-                <div className="hidden sm:grid sm:grid-cols-6 gap-2">
-                  <button title="Again (A)" aria-label="Again (A)"
+              {settings.mode === "test" ? (
+                // TEST desktop buttons (2)
+                <div className="hidden sm:flex gap-2">
+                  <button
+                    title="Again (A)"
+                    aria-label="Again (A)"
                     className="px-3 py-2 rounded-xl bg-rose-600 text-white"
-                    onClick={() => handleGrade("Again")}><div className="font-semibold">Again</div></button>
-
-                  <button title="1 day (1)" aria-label="1 day (1)"
-                    className="px-3 py-2 rounded-xl bg-gray-800 text-white"
-                    onClick={() => handleGrade("1D")}><div className="font-semibold">1D</div></button>
-
-                  <button title="3 days (3)" aria-label="3 days (3)"
-                    className="px-3 py-2 rounded-xl bg-gray-700 text-white"
-                    onClick={() => handleGrade("3D")}><div className="font-semibold">3D</div></button>
-
-                  <button title="7 days (7)" aria-label="7 days (7)"
-                    className="px-3 py-2 rounded-xl bg-indigo-600 text-white"
-                    onClick={() => handleGrade("7D")}><div className="font-semibold">7D</div></button>
-
-                  <button title="30 days (0)" aria-label="30 days (0)"
-                    className="px-3 py-2 rounded-xl bg-violet-600 text-white"
-                    onClick={() => handleGrade("30D")}><div className="font-semibold">30D</div></button>
-
-                  <button title="90 days (9)" aria-label="90 days (9)"
+                    onClick={handleTestAgain}
+                  >
+                    <div className="font-semibold">Again</div>
+                  </button>
+                  <button
+                    title="Good (G)"
+                    aria-label="Good (G)"
                     className="px-3 py-2 rounded-xl bg-emerald-600 text-white"
-                    onClick={() => handleGrade("90D")}><div className="font-semibold">90D</div></button>
+                    onClick={handleTestGood}
+                  >
+                    <div className="font-semibold">Good</div>
+                  </button>
                 </div>
+              ) : (
+                showGradeButtons && (
+                  <div className="hidden sm:grid sm:grid-cols-6 gap-2">
+                    {/* existing SRS buttons unchanged */}
+                    <button title="Again (A)" aria-label="Again (A)"
+                      className="px-3 py-2 rounded-xl bg-rose-600 text-white"
+                      onClick={() => handleGrade("Again")}><div className="font-semibold">Again</div></button>
+
+                    <button title="1 day (1)" aria-label="1 day (1)"
+                      className="px-3 py-2 rounded-xl bg-gray-800 text-white"
+                      onClick={() => handleGrade("1D")}><div className="font-semibold">1D</div></button>
+
+                    <button title="3 days (3)" aria-label="3 days (3)"
+                      className="px-3 py-2 rounded-xl bg-gray-700 text-white"
+                      onClick={() => handleGrade("3D")}><div className="font-semibold">3D</div></button>
+
+                    <button title="7 days (7)" aria-label="7 days (7)"
+                      className="px-3 py-2 rounded-xl bg-indigo-600 text-white"
+                      onClick={() => handleGrade("7D")}><div className="font-semibold">7D</div></button>
+
+                    <button title="30 days (0)" aria-label="30 days (0)"
+                      className="px-3 py-2 rounded-xl bg-violet-600 text-white"
+                      onClick={() => handleGrade("30D")}><div className="font-semibold">30D</div></button>
+
+                    <button title="90 days (9)" aria-label="90 days (9)"
+                      className="px-3 py-2 rounded-xl bg-emerald-600 text-white"
+                      onClick={() => handleGrade("90D")}><div className="font-semibold">90D</div></button>
+                  </div>
+                )
               )}
 
               {/* Sticky mobile grading bar – hidden until Submit in writing */}
-              {showGradeButtons && (
+              {settings.mode === "test" ? (
+                // TEST mobile 2-button bar
                 <div className="sm:hidden fixed left-0 right-0 bottom-0 z-40 border-t bg-white/95 backdrop-blur p-3">
-                  <div className="grid grid-cols-3 gap-2">
-                    <button title="Again (A)" aria-label="Again (A)" className="px-3 py-2 rounded-xl bg-rose-600 text-white" onClick={() => handleGrade("Again")}><div className="font-semibold">Again</div></button>
-                    <button title="1 day (1)" aria-label="1 day (1)" className="px-3 py-2 rounded-xl bg-gray-800 text-white" onClick={() => handleGrade("1D")}><div className="font-semibold">1D</div></button>
-                    <button title="3 days (3)" aria-label="3 days (3)" className="px-3 py-2 rounded-xl bg-gray-700 text-white" onClick={() => handleGrade("3D")}><div className="font-semibold">3D</div></button>
-                    <button title="7 days (7)" aria-label="7 days (7)" className="px-3 py-2 rounded-xl bg-indigo-600 text-white" onClick={() => handleGrade("7D")}><div className="font-semibold">7D</div></button>
-                    <button title="30 days (0)" aria-label="30 days (0)" className="px-3 py-2 rounded-xl bg-violet-600 text-white" onClick={() => handleGrade("30D")}><div className="font-semibold">30D</div></button>
-                    <button title="90 days (9)" aria-label="90 days (9)" className="px-3 py-2 rounded-xl bg-emerald-600 text-white" onClick={() => handleGrade("90D")}><div className="font-semibold">90D</div></button>
+                  <div className="grid grid-cols-2 gap-2">
+                    <button title="Again (A)" aria-label="Again (A)"
+                      className="px-3 py-2 rounded-xl bg-rose-600 text-white"
+                      onClick={handleTestAgain}><div className="font-semibold">Again</div></button>
+                    <button title="Good (G)" aria-label="Good (G)"
+                      className="px-3 py-2 rounded-xl bg-emerald-600 text-white"
+                      onClick={handleTestGood}><div className="font-semibold">Good</div></button>
                   </div>
                 </div>
+              ) : (
+                showGradeButtons && (
+                  <div className="sm:hidden fixed left-0 right-0 bottom-0 z-40 border-t bg-white/95 backdrop-blur p-3">
+                    <div className="grid grid-cols-3 gap-2">
+                      {/* existing mobile SRS buttons unchanged */}
+                      <button title="Again (A)" aria-label="Again (A)" className="px-3 py-2 rounded-xl bg-rose-600 text-white" onClick={() => handleGrade("Again")}><div className="font-semibold">Again</div></button>
+                      <button title="1 day (1)" aria-label="1 day (1)" className="px-3 py-2 rounded-xl bg-gray-800 text-white" onClick={() => handleGrade("1D")}><div className="font-semibold">1D</div></button>
+                      <button title="3 days (3)" aria-label="3 days (3)" className="px-3 py-2 rounded-xl bg-gray-700 text-white" onClick={() => handleGrade("3D")}><div className="font-semibold">3D</div></button>
+                      <button title="7 days (7)" aria-label="7 days (7)" className="px-3 py-2 rounded-xl bg-indigo-600 text-white" onClick={() => handleGrade("7D")}><div className="font-semibold">7D</div></button>
+                      <button title="30 days (0)" aria-label="30 days (0)" className="px-3 py-2 rounded-xl bg-violet-600 text-white" onClick={() => handleGrade("30D")}><div className="font-semibold">30D</div></button>
+                      <button title="90 days (9)" aria-label="90 days (9)" className="px-3 py-2 rounded-xl bg-emerald-600 text-white" onClick={() => handleGrade("90D")}><div className="font-semibold">90D</div></button>
+                    </div>
+                  </div>
+                )
               )}
 
               <EditableArea card={currentCard} onSave={editCurrentCard} />
