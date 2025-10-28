@@ -56,7 +56,7 @@
 
       function ready(cb) {
         if (window.supabase) return cb();
-        const s = document.querySelector('script[src*="supabase-js"]');
+        const s = document.querySelector('script[src*="supabase"]');
         if (s) s.addEventListener('load', () => cb(), { once: true });
         const t = setInterval(() => {
           if (window.supabase) { clearInterval(t); cb(); }
@@ -80,10 +80,9 @@
         window._syncFromCloud = false;  // guard: we're applying pull → don't auto-push
 
         // Track which entities really changed since last push
-        window._dirty = { cards:false, settings:false, history:false, capLog:false };
+        window._dirty = { cards:false, settings:false, history:false, capLog:false, test:false };
         window.markDirty = (...keys) => {
           for (const k of keys) if (k in window._dirty) window._dirty[k] = true;
-          // schedule a batched push soon (but NOT on every keystroke thanks to debounce)
           if (!window._syncFromCloud && typeof window.schedulePush === 'function') {
             window.schedulePush();
           }
@@ -142,14 +141,21 @@
           refreshButtons(); // safe; won't loop-pull now
         });
 
+        // Add this small default (Test mode local blob)
+        function defaultTestState() {
+          return { active:false, pack:"ALL", queue:[], goodById:{}, startedAt:0, total:0 };
+        }
+
         // ---- your existing helpers (unchanged) ----
         function getState() {
           try {
             const s = JSON.parse(localStorage.getItem("scripture_srs_v1")) || { cards:[], settings:{} };
-            if (!s.capLog) s.capLog = {};  // ← NEW: ensure present
+            if (!s.capLog) s.capLog = {};
+            if (!s.test || typeof s.test !== 'object') s.test = defaultTestState();
+            if (!s.test.goodById || typeof s.test.goodById !== 'object') s.test.goodById = {};
             return s;
           } catch {
-            return { cards:[], settings:{}, capLog:{} };
+            return { cards:[], settings:{}, capLog:{}, test: defaultTestState() };
           }
         }
         function setCardsLocal(cards) {
@@ -175,7 +181,12 @@
           localStorage.setItem("scripture_srs_v1", JSON.stringify(st));
           window.dispatchEvent(new CustomEvent('srs:pulled', { detail: { entity: 'capLog', at: Date.now() }}));
         }
-
+        function setTestLocal(test) {
+          const st = getState();
+          st.test = { ...(st.test || defaultTestState()), ...(test || {}) };
+          localStorage.setItem("scripture_srs_v1", JSON.stringify(st));
+          window.dispatchEvent(new CustomEvent('srs:pulled', { detail: { entity: 'test', at: Date.now() }}));
+        }
         // ===== Delta-sync helpers =====
         function getLastSync(key) {
           // keys: 'cards', 'history', 'settings', 'goal_caps'
@@ -208,8 +219,9 @@
                   .from('cards')
                   .select('id, user_id, ref, text, pack, srs_slow_bucket, srs_slow_next_due, srs_slow_updated_at, srs_fast_bucket, srs_fast_next_due, srs_fast_updated_at, order_in_pack, created_at, updated_at, deleted_at')
                   .eq('user_id', uid)
-                  .gt('updated_at', lastIso) // strict 'gt' avoids re-pulling identical timestamps
+                  .gt('updated_at', lastIso)
                   .order('updated_at', { ascending: true })
+                  .order('id', { ascending: true })   // or a stable 2nd key when 'id' exists
                   .range(from, from + pageSize - 1);
                 if (error) { console.error('cards delta pull error:', error); ok = false; break; }
                 rows = rows.concat(data || []);
@@ -369,6 +381,50 @@
               }
             }
 
+            // ---------- TEST MARKS (delta by updated_at) ----------
+            {
+              const last = getLastSync('test_good');
+              const lastIso = new Date(last || 0).toISOString();
+              const pageSize = 1000;
+              let from = 0, rows = [];
+              let ok = true;
+
+              for (;;) {
+                const { data, error } = await client
+                  .from('test_marks')
+                  .select('card_id, is_good, updated_at')
+                  .eq('user_id', uid)
+                  .gt('updated_at', lastIso)
+                  .order('updated_at', { ascending: true })
+                  .order('card_id', { ascending: true })
+                  .range(from, from + pageSize - 1);
+
+                if (error) { console.error('test_marks delta pull error:', error); ok = false; break; }
+                rows = rows.concat(data || []);
+                if (!data || data.length < pageSize) break;
+                from += pageSize;
+              }
+
+              if (rows.length) {
+                const state = getState();
+                const cur = (state.test && state.test.goodById) ? { ...state.test.goodById } : {};
+                for (const r of rows) {
+                  if (r.is_good) cur[r.card_id] = true;
+                  else delete cur[r.card_id];
+                }
+                setTestLocal({ ...(state.test || defaultTestState()), goodById: cur });
+              }
+
+              if (ok) {
+                if (rows.length) {
+                  const maxUpdated = Math.max(...rows.map(r => r.updated_at ? new Date(r.updated_at).getTime() : 0));
+                  setLastSync('test_good', Number.isFinite(maxUpdated) && maxUpdated > 0 ? maxUpdated : Date.now());
+                } else {
+                  setLastSync('test_good', Date.now());
+                }
+              }
+            }
+
             // ---------- GOAL CAPS (delta by updated_at; explicit columns) ----------
             {
               const last = getLastSync('goal_caps');
@@ -377,8 +433,9 @@
                 .from('goal_caps')
                 .select('day, cap_slow, cap_fast, updated_at')
                 .eq('user_id', uid)
-                .gt('updated_at', lastIso) // strict gt for cursoring
+                .gt('updated_at', lastIso)
                 .order('updated_at', { ascending: true })
+                .order('day', { ascending: true })
                 .limit(2000);
 
               if (!error && gcRows?.length) {
@@ -423,7 +480,7 @@
           if (window._pushing) return;
           // Only push if something is dirty
           const d = window._dirty || {};
-          if (!d.cards && !d.settings && !d.history && !d.capLog) return;
+          if (!d.cards && !d.settings && !d.history && !d.capLog && !d.test) return;
           // Best-effort: fire and forget
           window.pushSRS?.();
         }
@@ -578,16 +635,47 @@
               }
             }
 
+            // --------- TEST MARKS (BATCHED UPSERT) ----------
+            if (window._dirty.test) {
+              const state = getState();
+              const test = state.test || defaultTestState();
+              const good = test.goodById || {};
+              const goodIds = Object.keys(good);
+              if (goodIds.length) {
+                // best-effort attach pack/ref
+                const byId = new Map((state.cards || []).map(c => [c.id, c]));
+                const rows = goodIds.map(id => {
+                  const c = byId.get(id);
+                  return {
+                    user_id: uid,
+                    card_id: id,
+                    pack: c?.pack || null,
+                    ref: c?.ref || null,
+                    is_good: true,
+                    updated_at: nowIso,
+                  };
+                });
+
+                for (let i = 0; i < rows.length; i += 500) {
+                  const part = rows.slice(i, i + 500);
+                  const { error } = await client.from('test_marks').upsert(part, { onConflict: 'user_id,card_id' });
+                  if (error) { hadError = true; showErr(error, "Test marks push failed"); break; }
+                }
+              } else {
+                // no goods to upsert; nothing to push (deletes happen on Reset from app.jsx)
+              }
+            }
+
           } catch (err) {
             hadError = true;
             showErr(err, "Push failed");
           } finally {
             window._pushing = false;
             window.srsSync.pushing = false;
-            // If we didn't error, clear dirty flags now
             if (!hadError) {
-              window._dirty = { cards:false, settings:false, history:false, capLog:false };
-              _opsSincePush = 0; // reset the burst counter after a successful push
+              // include `test:false` here so we don't keep re-pushing
+              window._dirty = { cards:false, settings:false, history:false, capLog:false, test:false };
+              _opsSincePush = 0;
             }
             window.srsSync.lastPushAt = Date.now();
             emitSync();

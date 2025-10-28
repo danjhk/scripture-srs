@@ -616,6 +616,7 @@ function App() {
         if (Array.isArray(s.history)) setHistory(s.history);
         if (s.daily) setDaily(s.daily);
         if (s.capLog) setCapLog(s.capLog);
+        if (s.test) setTest(s.test);
       } catch (e) { console.warn('Failed to apply pulled state', e); }
     }
     const onPulled = () => applyPulled();
@@ -805,6 +806,7 @@ function App() {
       active: rest.length === 0 ? false : test.active,
     };
     setTest(next);
+    window.markDirty?.('test');
     setCompleted((x) => x + 1); // only count finished items
   }
 
@@ -816,21 +818,45 @@ function App() {
     // 'Again' does NOT increment completed
   }
 
-  function resetTestSession() {
+  async function resetTestSession() {
     if (!confirm("Reset Test progress for this pack? All verses go back to 'Again' and queue is reshuffled.")) return;
+
     const pack = test.active ? test.pack : filterPack;
+
+    // BEST-EFFORT: clear server test marks for this pack (or all if ALL)
+    try {
+      const client = window.supabaseClient;
+      if (client) {
+        const { data: u } = await client.auth.getUser();
+        const uid = u?.user?.id;
+        if (uid) {
+          if (pack && pack !== "ALL") {
+            await client.from('test_marks').delete().eq('user_id', uid).eq('pack', pack);
+          } else {
+            await client.from('test_marks').delete().eq('user_id', uid);
+          }
+        }
+      }
+    } catch (e) {
+      console.warn("Server delete on Reset skipped/failed:", e);
+    }
+
     const q = buildTestQueue(cards, pack);
     if (q.length === 0) {
       setTest({ ...defaultTestState(), active: false, pack });
       setCompleted(0);
       setSessionStart(0);
       alert("No verses in this pack to test.");
+      // Also tell sync (empty snapshot)
+      window.markDirty?.('test');
       return;
     }
     const next = { active: true, pack, queue: q, goodById: {}, startedAt: Date.now(), total: q.length };
     setTest(next);
     setCompleted(0);
     setSessionStart(Date.now());
+    // Test store changed → ask sync layer to push an empty set
+    window.markDirty?.('test');
   }
 
   // Keep test queue valid if cards change (e.g., deletions/imports)
@@ -973,7 +999,8 @@ function App() {
   }
 
   function exportJson() {
-    const blob = new Blob([JSON.stringify({ cards, settings, history, daily, capLog }, null, 2)], { type: "application/json" });
+    const state = JSON.parse(localStorage.getItem("scripture_srs_v1") || "{}");
+    const blob = new Blob([JSON.stringify({ cards, settings, history, daily, capLog, test: state.test || null }, null, 2)], { type: "application/json" });
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
     a.href = url;
