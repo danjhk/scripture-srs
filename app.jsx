@@ -18,7 +18,7 @@ const now = () => Date.now();
 const day = 24 * 60 * 60 * 1000;
 
 // --- Fixed buckets for display only (scheduling is fixed by button) ---
-const BUCKETS = ["0D", "1D", "3D", "7D", "14D", "30D"];
+const BUCKETS = ["0D", "1D", "3D", "7D", "14D", "30D", "90D"];
 function bucketFromDays(d) {
   if (d <= 0) return "0D";
   if (d <= 1) return "1D";
@@ -26,7 +26,8 @@ function bucketFromDays(d) {
   if (d <= 7) return "7D";
   if (d <= 14) return "14D";
   if (d <= 30) return "30D";
-  return "30D";
+  if (d <= 90) return "90D";
+  return "90D";
 }
 
 // For migration bookkeeping
@@ -219,6 +220,7 @@ const LABEL_TO_DAYS = {
   "7D": 7,
   "14D": 14,
   "30D": 30,
+  "90D": 90,
 };
 
 // Optional small jitter so due lists aren't perfectly synchronized
@@ -280,7 +282,16 @@ function monthKey(dt) { const d=new Date(dt); return `${d.getUTCFullYear()}-${St
 function yearKey(dt) { return String(new Date(dt).getUTCFullYear()); }
 
 // --- Phase 5: keyboard shortcuts ---
-const SHORTCUT_MAP = { a: "Again", "1": "1D", "3": "3D", "7": "7D", "0": "14D", "9": "30D" };
+// Recognition/Review (NOT test mode):
+// 1 → 1D, 3 → 3D, 7 → 7D, 0 → 14D, 9 → 30D, 6 → 90D
+const SHORTCUT_MAP = {
+  "1": "1D",
+  "3": "3D",
+  "7": "7D",
+  "0": "14D",
+  "9": "30D",
+  "6": "90D",
+};
 
 /* ===========================================
    TEST mode — local-only state & helpers
@@ -1241,7 +1252,7 @@ function App() {
                 <div className="text-[11px] text-gray-500">
                   {settings.mode === "test"
                     ? "Shortcuts (Test): A = Again, G = Good."
-                    : "Shortcuts: A (Again), 1, 3, 7, 0 (14D), 9 (30D)."}
+                    : "Shortcuts: 1, 3, 7, 0 (14D), 9 (30D), 6 (90D)."}
                 </div>
               )}
 
@@ -1303,30 +1314,59 @@ function App() {
               ) : (
                 showGradeButtons && (
                   <div className="hidden sm:grid sm:grid-cols-6 gap-2">
-                    {/* existing SRS buttons unchanged */}
-                    <button title="Again (A)" aria-label="Again (A)"
-                      className="px-3 py-2 rounded-xl bg-rose-600 text-white"
-                      onClick={() => handleGrade("Again")}><div className="font-semibold">Again</div></button>
-
-                    <button title="1 day (1)" aria-label="1 day (1)"
+                    <button
+                      title="1 day (1)"
+                      aria-label="1 day (1)"
                       className="px-3 py-2 rounded-xl bg-gray-800 text-white"
-                      onClick={() => handleGrade("1D")}><div className="font-semibold">1D</div></button>
+                      onClick={() => handleGrade("1D")}
+                    >
+                      <div className="font-semibold">1D</div>
+                    </button>
 
-                    <button title="3 days (3)" aria-label="3 days (3)"
+                    <button
+                      title="3 days (3)"
+                      aria-label="3 days (3)"
                       className="px-3 py-2 rounded-xl bg-gray-700 text-white"
-                      onClick={() => handleGrade("3D")}><div className="font-semibold">3D</div></button>
+                      onClick={() => handleGrade("3D")}
+                    >
+                      <div className="font-semibold">3D</div>
+                    </button>
 
-                    <button title="7 days (7)" aria-label="7 days (7)"
+                    <button
+                      title="7 days (7)"
+                      aria-label="7 days (7)"
                       className="px-3 py-2 rounded-xl bg-indigo-600 text-white"
-                      onClick={() => handleGrade("7D")}><div className="font-semibold">7D</div></button>
+                      onClick={() => handleGrade("7D")}
+                    >
+                      <div className="font-semibold">7D</div>
+                    </button>
 
-                    <button title="14 days (0)" aria-label="14 days (0)"
+                    <button
+                      title="14 days (0)"
+                      aria-label="14 days (0)"
                       className="px-3 py-2 rounded-xl bg-violet-600 text-white"
-                      onClick={() => handleGrade("14D")}><div className="font-semibold">14D</div></button>
+                      onClick={() => handleGrade("14D")}
+                    >
+                      <div className="font-semibold">14D</div>
+                    </button>
 
-                    <button title="30 days (9)" aria-label="30 days (9)"
+                    <button
+                      title="30 days (9)"
+                      aria-label="30 days (9)"
                       className="px-3 py-2 rounded-xl bg-emerald-600 text-white"
-                      onClick={() => handleGrade("30D")}><div className="font-semibold">30D</div></button>
+                      onClick={() => handleGrade("30D")}
+                    >
+                      <div className="font-semibold">30D</div>
+                    </button>
+
+                    <button
+                      title="90 days"
+                      aria-label="90 days"
+                      className="px-3 py-2 rounded-xl bg-teal-600 text-white"
+                      onClick={() => handleGrade("90D")}
+                    >
+                      <div className="font-semibold">90D</div>
+                    </button>
                   </div>
                 )
               )}
@@ -1348,13 +1388,59 @@ function App() {
                 showGradeButtons && (
                   <div className="sm:hidden fixed left-0 right-0 bottom-0 z-40 border-t bg-white/95 backdrop-blur p-3">
                     <div className="grid grid-cols-3 gap-2">
-                      {/* existing mobile SRS buttons unchanged */}
-                      <button title="Again (A)" aria-label="Again (A)" className="px-3 py-2 rounded-xl bg-rose-600 text-white" onClick={() => handleGrade("Again")}><div className="font-semibold">Again</div></button>
-                      <button title="1 day (1)" aria-label="1 day (1)" className="px-3 py-2 rounded-xl bg-gray-800 text-white" onClick={() => handleGrade("1D")}><div className="font-semibold">1D</div></button>
-                      <button title="3 days (3)" aria-label="3 days (3)" className="px-3 py-2 rounded-xl bg-gray-700 text-white" onClick={() => handleGrade("3D")}><div className="font-semibold">3D</div></button>
-                      <button title="7 days (7)" aria-label="7 days (7)" className="px-3 py-2 rounded-xl bg-indigo-600 text-white" onClick={() => handleGrade("7D")}><div className="font-semibold">7D</div></button>
-                      <button title="14 days (0)" aria-label="14 days (0)" className="px-3 py-2 rounded-xl bg-violet-600 text-white" onClick={() => handleGrade("14D")}><div className="font-semibold">14D</div></button>
-                      <button title="30 days (9)" aria-label="30 days (9)" className="px-3 py-2 rounded-xl bg-emerald-600 text-white" onClick={() => handleGrade("30D")}><div className="font-semibold">30D</div></button>
+                      <button
+                        title="1 day (1)"
+                        aria-label="1 day (1)"
+                        className="px-3 py-2 rounded-xl bg-gray-800 text-white"
+                        onClick={() => handleGrade("1D")}
+                      >
+                        <div className="font-semibold">1D</div>
+                      </button>
+
+                      <button
+                        title="3 days (3)"
+                        aria-label="3 days (3)"
+                        className="px-3 py-2 rounded-xl bg-gray-700 text-white"
+                        onClick={() => handleGrade("3D")}
+                      >
+                        <div className="font-semibold">3D</div>
+                      </button>
+
+                      <button
+                        title="7 days (7)"
+                        aria-label="7 days (7)"
+                        className="px-3 py-2 rounded-xl bg-indigo-600 text-white"
+                        onClick={() => handleGrade("7D")}
+                      >
+                        <div className="font-semibold">7D</div>
+                      </button>
+
+                      <button
+                        title="14 days (0)"
+                        aria-label="14 days (0)"
+                        className="px-3 py-2 rounded-xl bg-violet-600 text-white"
+                        onClick={() => handleGrade("14D")}
+                      >
+                        <div className="font-semibold">14D</div>
+                      </button>
+
+                      <button
+                        title="30 days (9)"
+                        aria-label="30 days (9)"
+                        className="px-3 py-2 rounded-xl bg-emerald-600 text-white"
+                        onClick={() => handleGrade("30D")}
+                      >
+                        <div className="font-semibold">30D</div>
+                      </button>
+
+                      <button
+                        title="90 days"
+                        aria-label="90 days"
+                        className="px-3 py-2 rounded-xl bg-teal-600 text-white"
+                        onClick={() => handleGrade("90D")}
+                      >
+                        <div className="font-semibold">90D</div>
+                      </button>
                     </div>
                   </div>
                 )
