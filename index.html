@@ -80,7 +80,7 @@
         window._syncFromCloud = false;  // guard: we're applying pull → don't auto-push
 
         // Track which entities really changed since last push
-        window._dirty = { cards:false, settings:false, history:false, capLog:false, test:false };
+        window._dirty = { cards:false, settings:false, history:false, capLog:false, test:false, bulkProgress:false };
         window.markDirty = (...keys) => {
           for (const k of keys) if (k in window._dirty) window._dirty[k] = true;
           if (!window._syncFromCloud && typeof window.schedulePush === 'function') {
@@ -145,6 +145,34 @@
         function defaultTestState() {
           return { active:false, pack:"ALL", queue:[], goodById:{}, startedAt:0, total:0 };
         }
+        function defaultBulkProgress() {
+          return {
+            deckKey: "1_tessalonicenses",
+            cycle: 1,
+            reviewedIds: [],
+            dailyKey: null,
+            dailyAssignedIds: [],
+            updatedAt: 0,
+          };
+        }
+        function coerceBulkProgress(raw) {
+          const p = raw && typeof raw === 'object' ? raw : {};
+          const arr = (v) => Array.from(new Set((Array.isArray(v) ? v : []).map(String).filter(Boolean)));
+          const rawUpdatedAt = p.updatedAt || p.updated_at || 0;
+          const updatedAt = typeof rawUpdatedAt === 'string'
+            ? new Date(rawUpdatedAt).getTime()
+            : Number(rawUpdatedAt || 0);
+          return {
+            ...defaultBulkProgress(),
+            ...p,
+            deckKey: p.deckKey || p.deck_key || "1_tessalonicenses",
+            cycle: Math.max(1, Number(p.cycle || 1)),
+            reviewedIds: arr(p.reviewedIds || p.reviewed_ids),
+            dailyKey: p.dailyKey || p.daily_key || null,
+            dailyAssignedIds: arr(p.dailyAssignedIds || p.daily_assigned_ids),
+            updatedAt: Number.isFinite(updatedAt) ? updatedAt : 0,
+          };
+        }
 
         // ---- your existing helpers (unchanged) ----
         function getState() {
@@ -153,9 +181,10 @@
             if (!s.capLog) s.capLog = {};
             if (!s.test || typeof s.test !== 'object') s.test = defaultTestState();
             if (!s.test.goodById || typeof s.test.goodById !== 'object') s.test.goodById = {};
+            s.bulkProgress = coerceBulkProgress(s.bulkProgress);
             return s;
           } catch {
-            return { cards:[], settings:{}, capLog:{}, test: defaultTestState() };
+            return { cards:[], settings:{}, capLog:{}, test: defaultTestState(), bulkProgress: defaultBulkProgress() };
           }
         }
         function setCardsLocal(cards) {
@@ -187,6 +216,12 @@
           localStorage.setItem("scripture_srs_v1", JSON.stringify(st));
           window.dispatchEvent(new CustomEvent('srs:pulled', { detail: { entity: 'test', at: Date.now() }}));
         }
+        function setBulkProgressLocal(bulkProgress) {
+          const st = getState();
+          st.bulkProgress = coerceBulkProgress(bulkProgress);
+          localStorage.setItem("scripture_srs_v1", JSON.stringify(st));
+          window.dispatchEvent(new CustomEvent('srs:pulled', { detail: { entity: 'bulkProgress', at: Date.now() }}));
+        }
         // ===== Delta-sync helpers =====
         function getLastSync(key) {
           // keys: 'cards', 'history', 'settings', 'goal_caps'
@@ -217,7 +252,7 @@
               for (;;) {
                 const { data, error } = await client
                   .from('cards')
-                  .select('id, user_id, ref, text, pack, srs_slow_bucket, srs_slow_next_due, srs_slow_updated_at, srs_fast_bucket, srs_fast_next_due, srs_fast_updated_at, order_in_pack, created_at, updated_at, deleted_at')
+                  .select('id, user_id, ref, text, pack, review_system, srs_slow_bucket, srs_slow_next_due, srs_slow_updated_at, srs_fast_bucket, srs_fast_next_due, srs_fast_updated_at, order_in_pack, created_at, updated_at, deleted_at')
                   .eq('user_id', uid)
                   .gt('updated_at', lastIso)
                   .order('updated_at', { ascending: true })
@@ -236,6 +271,7 @@
                   ref: r.ref,
                   text: r.text,
                   pack: r.pack,
+                  reviewSystem: r.review_system || 'srs',
                   srs: {
                     slow: {
                       bucket: r.srs_slow_bucket || '0D',
@@ -287,6 +323,59 @@
                 } else {
                   setLastSync('cards', Date.now());
                 }
+              }
+            }
+
+            // Always pull the active bulk deck, even if the normal delta cursor has advanced.
+            {
+              const { data: rows, error } = await client
+                .from('cards')
+                .select('id, user_id, ref, text, pack, review_system, srs_slow_bucket, srs_slow_next_due, srs_slow_updated_at, srs_fast_bucket, srs_fast_next_due, srs_fast_updated_at, order_in_pack, created_at, updated_at, deleted_at')
+                .eq('user_id', uid)
+                .eq('review_system', 'bulk')
+                .eq('pack', '1_Tessalonicenses_formatted_prefixed.txt')
+                .order('order_in_pack', { ascending: true });
+
+              if (!error && rows?.length) {
+                const pulled = rows.map(r => ({
+                  id: r.id,
+                  ref: r.ref,
+                  text: r.text,
+                  pack: r.pack,
+                  reviewSystem: r.review_system || 'bulk',
+                  srs: {
+                    slow: {
+                      bucket: r.srs_slow_bucket || '0D',
+                      nextDue: Number(r.srs_slow_next_due || 0),
+                      updatedAt: r.srs_slow_updated_at ? new Date(r.srs_slow_updated_at).getTime() : 0,
+                      ease: 2.5, reps: 0, lapses: 0, intervalDays: 0, leech: false,
+                    },
+                    fast: {
+                      bucket: r.srs_fast_bucket || (r.srs_slow_bucket || '0D'),
+                      nextDue: Number(r.srs_fast_next_due || r.srs_slow_next_due || 0),
+                      updatedAt: r.srs_fast_updated_at
+                        ? new Date(r.srs_fast_updated_at).getTime()
+                        : (r.srs_slow_updated_at ? new Date(r.srs_slow_updated_at).getTime() : 0),
+                      ease: 2.5, reps: 0, lapses: 0, intervalDays: 0, leech: false,
+                    },
+                  },
+                  order: r.order_in_pack || undefined,
+                  createdAt: r.created_at ? new Date(r.created_at).getTime() : 0,
+                  updatedAt: r.updated_at ? new Date(r.updated_at).getTime() : 0,
+                  deletedAt: r.deleted_at ? new Date(r.deleted_at).getTime() : null,
+                }));
+                const local = getState().cards || [];
+                const byId = new Map(local.map(c => [c.id, c]));
+                for (const r of pulled) {
+                  if (r.deletedAt) byId.delete(r.id);
+                  else {
+                    const cur = byId.get(r.id);
+                    if (!cur || (r.updatedAt >= (cur.updatedAt || 0))) byId.set(r.id, r);
+                  }
+                }
+                setCardsLocal(Array.from(byId.values()));
+              } else if (error) {
+                console.error('bulk cards pull error:', error);
               }
             }
 
@@ -425,6 +514,34 @@
               }
             }
 
+            // ---------- BULK PROGRESS (single-row state) ----------
+            {
+              const { data: rows, error } = await client
+                .from('bulk_progress')
+                .select('deck_key, cycle, reviewed_ids, daily_key, daily_assigned_ids, updated_at')
+                .eq('user_id', uid)
+                .eq('deck_key', '1_tessalonicenses')
+                .limit(1);
+
+              if (!error && rows?.[0]) {
+                const r = rows[0];
+                const remote = {
+                  deckKey: r.deck_key,
+                  cycle: r.cycle || 1,
+                  reviewedIds: Array.isArray(r.reviewed_ids) ? r.reviewed_ids : [],
+                  dailyKey: r.daily_key || null,
+                  dailyAssignedIds: Array.isArray(r.daily_assigned_ids) ? r.daily_assigned_ids : [],
+                  updatedAt: r.updated_at ? new Date(r.updated_at).getTime() : 0,
+                };
+                const local = coerceBulkProgress(getState().bulkProgress);
+                if ((remote.updatedAt || 0) >= (local.updatedAt || 0)) {
+                  setBulkProgressLocal(remote);
+                }
+              } else if (error && error.code !== 'PGRST116') {
+                console.error('bulk_progress pull error:', error);
+              }
+            }
+
             // ---------- GOAL CAPS (delta by updated_at; explicit columns) ----------
             {
               const last = getLastSync('goal_caps');
@@ -480,7 +597,7 @@
           if (window._pushing) return;
           // Only push if something is dirty
           const d = window._dirty || {};
-          if (!d.cards && !d.settings && !d.history && !d.capLog && !d.test) return;
+          if (!d.cards && !d.settings && !d.history && !d.capLog && !d.test && !d.bulkProgress) return;
           // Best-effort: fire and forget
           window.pushSRS?.();
         }
@@ -536,6 +653,7 @@
                   id: c.id || crypto.randomUUID(),
                   user_id: uid,
                   ref: c.ref, text: c.text, pack: c.pack,
+                  review_system: c.reviewSystem || c.review_system || 'srs',
                   content_hash,
 
                   srs_slow_bucket: slow.bucket || '0D',
@@ -666,6 +784,22 @@
               }
             }
 
+            // --------- BULK PROGRESS (single-row upsert) ----------
+            if (window._dirty.bulkProgress) {
+              const state = getState();
+              const progress = coerceBulkProgress(state.bulkProgress);
+              const { error } = await client.from('bulk_progress').upsert({
+                user_id: uid,
+                deck_key: progress.deckKey || '1_tessalonicenses',
+                cycle: Math.max(1, Number(progress.cycle || 1)),
+                reviewed_ids: Array.isArray(progress.reviewedIds) ? progress.reviewedIds : [],
+                daily_key: progress.dailyKey || null,
+                daily_assigned_ids: Array.isArray(progress.dailyAssignedIds) ? progress.dailyAssignedIds : [],
+                updated_at: nowIso,
+              }, { onConflict: 'user_id,deck_key' });
+              if (error) { hadError = true; showErr(error, "Bulk progress push failed"); }
+            }
+
           } catch (err) {
             hadError = true;
             showErr(err, "Push failed");
@@ -674,7 +808,7 @@
             window.srsSync.pushing = false;
             if (!hadError) {
               // include `test:false` here so we don't keep re-pushing
-              window._dirty = { cards:false, settings:false, history:false, capLog:false, test:false };
+              window._dirty = { cards:false, settings:false, history:false, capLog:false, test:false, bulkProgress:false };
               _opsSincePush = 0;
             }
             window.srsSync.lastPushAt = Date.now();
