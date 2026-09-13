@@ -841,6 +841,11 @@ function App() {
     let list = srsCards.filter((c) => (c?.srs?.[key]?.nextDue ?? 0) <= t);
     if (filterPack !== "ALL") list = list.filter((c) => c.pack === filterPack);
     list.sort((a, b) => {
+      if (settings.mode === "review") {
+        const aNextDue = a?.srs?.slow?.nextDue ?? 0;
+        const bNextDue = b?.srs?.slow?.nextDue ?? 0;
+        if (aNextDue !== bNextDue) return aNextDue - bNextDue;
+      }
       if (filterPack === "ALL" && a.pack !== b.pack) return String(a.pack).localeCompare(String(b.pack));
       const ao = a.order ?? Number.POSITIVE_INFINITY, bo = b.order ?? Number.POSITIVE_INFINITY;
       if (ao !== bo) return ao - bo;
