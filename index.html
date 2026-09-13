@@ -333,7 +333,7 @@
                 .select('id, user_id, ref, text, pack, review_system, srs_slow_bucket, srs_slow_next_due, srs_slow_updated_at, srs_fast_bucket, srs_fast_next_due, srs_fast_updated_at, order_in_pack, created_at, updated_at, deleted_at')
                 .eq('user_id', uid)
                 .eq('review_system', 'bulk')
-                .eq('pack', '1_Tessalonicenses_formatted_prefixed.txt')
+                .eq('pack', '29 - 1 Tessalonicenses.txt')
                 .order('order_in_pack', { ascending: true });
 
               if (!error && rows?.length) {

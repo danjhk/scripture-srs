@@ -16,10 +16,15 @@ const { useEffect, useMemo, useRef, useState } = React;
 const LS_KEY = "scripture_srs_v1";
 const now = () => Date.now();
 const day = 24 * 60 * 60 * 1000;
+const PACK_RENAMES = Object.freeze({
+  "Filipenses_formatted_prefixed.txt": "27 - Filipenses.txt",
+  "Colossenses_prefixed.txt": "28 - Colossenses.txt",
+  "1_Tessalonicenses_formatted_prefixed.txt": "29 - 1 Tessalonicenses.txt",
+});
 const BULK_DECK = {
   key: "1_tessalonicenses",
   label: "1 Tessalonicenses",
-  pack: "1_Tessalonicenses_formatted_prefixed.txt",
+  pack: "29 - 1 Tessalonicenses.txt",
   dailyCap: 12,
 };
 
@@ -65,6 +70,10 @@ function hashString(s) {
   return (h >>> 0).toString(36);
 }
 
+function canonicalPackName(pack) {
+  return PACK_RENAMES[pack] || pack;
+}
+
 /* ============================================================
    NEW: robust line parser (supports Hangul + verse lists)
    (unchanged from your latest working version)
@@ -98,7 +107,7 @@ function parseLineToCard(line, fileName) {
     id,
     ref,
     text,
-    pack: fileName,
+    pack: canonicalPackName(fileName),
     reviewSystem: "srs",
     srs: makeInitialSrs(),
     order: undefined,
@@ -136,6 +145,7 @@ function loadState() {
 // Ensure srs.slow / srs.fast exist on a card
 function migrateCardSRS(card) {
   const reviewSystem = card?.reviewSystem || card?.review_system || "srs";
+  const pack = canonicalPackName(card?.pack);
   if (card?.srs?.slow || card?.srs?.fast) {
     const normalize = (sub) => ({
       bucket: sub?.bucket || "0D",
@@ -149,6 +159,7 @@ function migrateCardSRS(card) {
     });
     return {
       ...card,
+      pack,
       reviewSystem,
       srs: {
         slow: normalize(card.srs.slow),
@@ -156,7 +167,7 @@ function migrateCardSRS(card) {
       },
     };
   }
-  return { ...card, reviewSystem, srs: makeInitialSrs() };
+  return { ...card, pack, reviewSystem, srs: makeInitialSrs() };
 }
 
 // Assign 1-based `order` per pack; preserve existing order if present, else use createdAt then id
@@ -841,12 +852,10 @@ function App() {
     let list = srsCards.filter((c) => (c?.srs?.[key]?.nextDue ?? 0) <= t);
     if (filterPack !== "ALL") list = list.filter((c) => c.pack === filterPack);
     list.sort((a, b) => {
-      if (settings.mode === "review") {
-        const aNextDue = a?.srs?.slow?.nextDue ?? 0;
-        const bNextDue = b?.srs?.slow?.nextDue ?? 0;
-        if (aNextDue !== bNextDue) return aNextDue - bNextDue;
+      if (filterPack === "ALL" && a.pack !== b.pack) {
+        const packOrder = String(a.pack).localeCompare(String(b.pack));
+        return settings.mode === "review" ? -packOrder : packOrder;
       }
-      if (filterPack === "ALL" && a.pack !== b.pack) return String(a.pack).localeCompare(String(b.pack));
       const ao = a.order ?? Number.POSITIVE_INFINITY, bo = b.order ?? Number.POSITIVE_INFINITY;
       if (ao !== bo) return ao - bo;
       const ar = String(a.ref || ""), br = String(b.ref || "");
