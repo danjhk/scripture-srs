@@ -233,6 +233,8 @@
         }
         
         async function pullAll() {
+          if (window._pullInFlight) return;
+          window._pullInFlight = true;
           window.srsSync.pulling = true; emitSync();
           window._syncFromCloud = true;
           try {
@@ -245,7 +247,10 @@
             // On first install, last=0 → ISO 1970, so you'll get a one-time "full" pull.
             {
               const last = getLastSync('cards');
-              const lastIso = new Date(last || 0).toISOString();
+              const localCards = getState().cards || [];
+              // An empty local snapshot with an existing cursor needs a full recovery pull.
+              const forceFullPull = last > 0 && localCards.length === 0;
+              const lastIso = new Date(forceFullPull ? 0 : (last || 0)).toISOString();
               const pageSize = 1000;
               let from = 0, rows = [];
               let ok = true;
@@ -320,9 +325,10 @@
                   } else {
                     setLastSync('cards', Date.now());
                   }
-                } else {
-                  setLastSync('cards', Date.now());
                 }
+                // Do not advance the cursor when no rows were returned. A client clock can
+                // be ahead of the database, and an empty result does not prove that all
+                // remote changes have been observed.
               }
             }
 
@@ -577,6 +583,7 @@
             console.error('pullAll (delta) failed:', err);
           } finally {
             setTimeout(() => { window._syncFromCloud = false; }, 150);
+            window._pullInFlight = false;
             window.srsSync.pulling = false;
             window.srsSync.lastPullAt = Date.now();
             emitSync();
@@ -608,6 +615,7 @@
 
         // Expose push function (guarded)
         window.pushSRS = async function pushAll() {
+          if (window._pushing) return;
           let hadError = false;
           // Mark pushing
           window.srsSync.pushing = true; emitSync();
@@ -629,10 +637,10 @@
 
           try {
             const client = window.supabaseClient;
-            if (!client) { alert("Sign in first."); return; }
+            if (!client) { hadError = true; alert("Sign in first."); return; }
 
             const { data: user } = await client.auth.getUser();
-            if (!user?.user) { alert("Sign in first."); return; }
+            if (!user?.user) { hadError = true; alert("Sign in first."); return; }
             const uid = user.user.id;
 
             const { cards, settings, history } = getState();

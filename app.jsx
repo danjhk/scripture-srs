@@ -672,6 +672,7 @@ function App() {
   const [bulkProgress, setBulkProgress] = useState(defaultBulkProgress());
   const [bulkQueue, setBulkQueue] = useState([]);
   const [bulkSkippedIds, setBulkSkippedIds] = useState([]);
+  const [hydrated, setHydrated] = useState(false);
   const fileInputRef = useRef(null);
 
   // NEW: writing state: whether current card has been submitted
@@ -713,10 +714,12 @@ function App() {
     setTest(loadedTest);
     setBulkProgress(loadedBulkProgress);
     if (loadedTest.active) setFilterPack(loadedTest.pack);
+    setHydrated(true);
   }, []);
   useEffect(() => {
+    if (!hydrated) return;
     saveState({ cards, settings, history, daily, capLog, test, bulkProgress });
-  }, [cards, settings, history, daily, capLog, test, bulkProgress]);
+  }, [hydrated, cards, settings, history, daily, capLog, test, bulkProgress]);
 
   useEffect(() => {
     if (settings.mode === "test" && test.active) {
