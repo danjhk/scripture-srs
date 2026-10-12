@@ -2001,9 +2001,12 @@ function ReadPackView({ pack, cards }) {
       <div className="text-xs text-gray-500">Pack: {pack} · {cards.length} verse{cards.length === 1 ? "" : "s"}</div>
       <ol className="mt-4 divide-y">
         {cards.map((c, i) => (
-          <li key={c.id} className="py-4 first:pt-0 last:pb-0">
-            <div className="text-sm font-semibold text-gray-700">{c.order ?? i + 1}. {c.ref}</div>
-            <div className="mt-1 text-base whitespace-pre-wrap break-words">{c.text}</div>
+          <li key={c.id} className="py-4 first:pt-0 last:pb-0 flex justify-center">
+            {/* Same narrow column as Review, so lines wrap the same way */}
+            <div className="text-base font-mono w-[25ch]">
+              <div className="font-sans text-sm font-semibold text-gray-700">{c.order ?? i + 1}. {c.ref}</div>
+              <div className="mt-1 whitespace-pre-wrap break-words">{c.text}</div>
+            </div>
           </li>
         ))}
       </ol>
