@@ -1,0 +1,373 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<meta name="robots" content="noindex" />
+<title>개역한글 암송 연습</title>
+<style>
+  :root {
+    --bg: #f8fafc; --card: #ffffff; --text: #111827; --muted: #6b7280; --border: #e5e7eb;
+    --ok: #bbf7d0; --ok-text: #14532d; --near: #fde68a; --near-text: #713f12;
+    --bad: #fecaca; --bad-text: #7f1d1d; --accent: #4f46e5; --accent-text: #ffffff; --rec: #dc2626;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #0f172a; --card: #1e293b; --text: #f1f5f9; --muted: #94a3b8; --border: #334155;
+      --ok: #14532d; --ok-text: #dcfce7; --near: #713f12; --near-text: #fef3c7;
+      --bad: #7f1d1d; --bad-text: #fee2e2; --accent: #6366f1; --accent-text: #ffffff; --rec: #ef4444;
+    }
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; max-width: 100%; overflow-x: hidden; }
+  body { background: var(--bg); color: var(--text); font: 16px/1.5 system-ui, -apple-system, "Apple SD Gothic Neo", "Noto Sans KR", sans-serif; word-break: keep-all; overflow-wrap: anywhere; }
+  main { max-width: 640px; margin: 0 auto; padding: 16px; }
+  h1 { font-size: 18px; margin: 0; }
+  .muted { color: var(--muted); font-size: 13px; }
+  .card { background: var(--card); border: 1px solid var(--border); border-radius: 14px; padding: 14px; margin-top: 12px; }
+  .row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+  .spread { justify-content: space-between; }
+  select, textarea, button { font: inherit; color: var(--text); }
+  select { flex: 1; min-width: 0; padding: 8px; border-radius: 10px; border: 1px solid var(--border); background: var(--card); }
+  button { padding: 8px 14px; border-radius: 10px; border: 1px solid var(--border); background: var(--card); cursor: pointer; }
+  button.primary { background: var(--accent); border-color: var(--accent); color: var(--accent-text); }
+  label.switch { font-size: 14px; display: flex; gap: 6px; align-items: center; }
+  .ref { font-size: 22px; font-weight: 700; margin-top: 2px; }
+  .heading { color: var(--muted); font-size: 15px; margin-top: 10px; }
+  .title { font-weight: 700; font-size: 17px; }
+  .verse { font-size: 18px; line-height: 1.85; word-break: keep-all; overflow-wrap: anywhere; margin-top: 4px; }
+  .placeholder { color: var(--muted); font-style: italic; margin-top: 10px; }
+  #mic { width: 100%; padding: 16px; font-size: 18px; font-weight: 600; background: var(--accent); border: 0; color: var(--accent-text); border-radius: 14px; margin-top: 12px; }
+  #mic.on { background: var(--rec); }
+  #mic:disabled { opacity: .45; cursor: default; }
+  #live { min-height: 1.5em; font-size: 17px; word-break: keep-all; overflow-wrap: anywhere; }
+  #live .interim { color: var(--muted); }
+  .ok { background: var(--ok); color: var(--ok-text); }
+  .near { background: var(--near); color: var(--near-text); }
+  .bad { background: var(--bad); color: var(--bad-text); }
+  .word-bad { cursor: pointer; }
+  .legend span { padding: 0 6px; border-radius: 4px; margin-left: 4px; font-size: 13px; }
+  .score { font-size: 22px; font-weight: 700; }
+  .err { color: var(--rec); font-size: 14px; margin-top: 8px; }
+  textarea { width: 100%; min-height: 90px; margin-top: 8px; padding: 10px; border-radius: 10px; border: 1px solid var(--border); background: var(--card); font-size: 16px; }
+  .nav { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 8px; margin-top: 12px; }
+  footer { margin: 24px 0 8px; text-align: center; }
+</style>
+</head>
+<body>
+<main>
+  <h1>개역한글 암송 연습</h1>
+  <div id="support" class="err" hidden></div>
+
+  <div class="card">
+    <div class="row">
+      <select id="pack" aria-label="팩"></select>
+    </div>
+    <div class="row" style="margin-top:10px">
+      <label class="switch"><input type="checkbox" id="shuffle" /> 섞기</label>
+      <label class="switch"><input type="checkbox" id="showVerse" /> 구절 보기</label>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="row spread">
+      <div class="muted" id="packName"></div>
+      <div class="muted" id="position"></div>
+    </div>
+    <div class="ref" id="ref"></div>
+    <div id="verseBox"></div>
+  </div>
+
+  <button id="mic">🎤 말하기 시작</button>
+  <div class="muted" style="margin-top:6px; text-align:center">버튼을 누르고 잠깐 뒤에 말하세요. 다 말하면 다시 누르세요.</div>
+  <div class="err" id="error" hidden></div>
+
+  <div class="card" id="liveCard" hidden>
+    <div class="muted">듣는 중…</div>
+    <div id="live"></div>
+  </div>
+
+  <div class="card" id="resultCard" hidden>
+    <div class="row spread">
+      <div class="score" id="score"></div>
+      <div class="legend"><span class="ok">맞음</span><span class="near">소리 같음</span><span class="bad">틀림</span></div>
+    </div>
+    <div class="muted" style="margin-top:6px">빨간 단어를 누르면 '맞게 말함'으로 바뀌어요.</div>
+    <div class="row spread" style="margin-top:12px">
+      <div class="muted">들린 내용 (빨강 = 구절에 없는 말)</div>
+      <button id="edit">수정</button>
+    </div>
+    <div class="verse" id="heard"></div>
+    <textarea id="transcript" lang="ko" hidden></textarea>
+  </div>
+
+  <div class="nav">
+    <button id="prev">◀ 이전</button>
+    <button id="again">다시</button>
+    <button id="next" class="primary">다음 ▶</button>
+  </div>
+
+  <footer class="muted" id="credit"></footer>
+</main>
+
+<script src="speak-compare.js"></script>
+<script>
+"use strict";
+const $ = (id) => document.getElementById(id);
+const store = {
+  get(k, d) { try { const v = localStorage.getItem(k); return v === null ? d : JSON.parse(v); } catch { return d; } },
+  set(k, v) { try { localStorage.setItem(k, JSON.stringify(v)); } catch {} },
+};
+const STATE_KEY = "krv-practice";
+
+let packs = [];
+let packIdx = 0;      // selected pack
+let order = [];       // verse indexes in play order
+let pos = 0;          // position in order
+let result = null;    // last comparison
+let heardText = "";
+
+const verse = () => packs[packIdx].verses[order[pos]];
+const targetOf = (v) => [v.heading, v.title, v.text].filter(Boolean).join(" ");
+
+function saveState() {
+  store.set(STATE_KEY, { pack: packIdx, verse: order[pos], shuffle: $("shuffle").checked, showVerse: $("showVerse").checked });
+}
+
+function makeOrder(startVerse) {
+  const n = packs[packIdx].verses.length;
+  order = Array.from({ length: n }, (_, i) => i);
+  if ($("shuffle").checked) {
+    for (let i = n - 1; i > 0; i--) { const j = Math.floor(Math.random() * (i + 1)); [order[i], order[j]] = [order[j], order[i]]; }
+  }
+  pos = Math.max(0, order.indexOf(startVerse ?? order[0]));
+}
+
+/* ---------- Rendering ---------- */
+function coloredInto(el, text, states, offset, onBadWord) {
+  el.textContent = "";
+  // One span per word so a red word can be tapped
+  const words = text.split(/(\s+)/);
+  let at = offset;
+  for (const w of words) {
+    if (/^\s+$/.test(w) || !w) { el.appendChild(document.createTextNode(w)); at += w.length; continue; }
+    const wordEl = document.createElement("span");
+    let cur = null, buf = "";
+    const flush = () => {
+      if (!buf) return;
+      const s = document.createElement("span");
+      if (cur) s.className = cur;
+      s.textContent = buf; wordEl.appendChild(s); buf = "";
+    };
+    let hasBad = false;
+    for (let i = 0; i < w.length; i++) {
+      const st = states ? states[at + i] : null;
+      if (st === "bad") hasBad = true;
+      if (st !== cur) { flush(); cur = st; }
+      buf += w[i];
+    }
+    flush();
+    if (hasBad && onBadWord) {
+      const start = at;
+      wordEl.classList.add("word-bad");
+      wordEl.addEventListener("click", () => onBadWord(start));
+    }
+    el.appendChild(wordEl);
+    at += w.length;
+  }
+}
+
+function renderVerse() {
+  const v = verse(), p = packs[packIdx];
+  $("pack").value = packIdx;
+  $("packName").textContent = p.name;
+  $("position").textContent = `${pos + 1} / ${order.length}`;
+  $("ref").textContent = v.ref;
+  const box = $("verseBox");
+  box.textContent = "";
+  if (!result && !$("showVerse").checked) {
+    const ph = document.createElement("div");
+    ph.className = "placeholder"; ph.textContent = "구절을 외워서 말해 보세요";
+    box.appendChild(ph);
+    return;
+  }
+  // heading, title and text are coloured from the same states as the joined target
+  let offset = 0;
+  for (const [field, cls] of [["heading", "heading"], ["title", "title"], ["text", "verse"]]) {
+    if (!v[field]) continue;
+    const el = document.createElement("div");
+    el.className = cls;
+    coloredInto(el, v[field], result && result.targetStates, offset, result ? acceptAt : null);
+    box.appendChild(el);
+    offset += v[field].length + 1;
+  }
+}
+
+function renderResult() {
+  $("resultCard").hidden = !result;
+  if (!result) return;
+  $("score").textContent = `일치 ${result.score}%`;
+  coloredInto($("heard"), heardText, result.heardStates, 0, null);
+}
+
+function render() { renderVerse(); renderResult(); }
+
+function check(text) {
+  heardText = text;
+  result = SpeakCompare.compare(text, targetOf(verse()));
+  render();
+}
+
+function acceptAt(index) {
+  result = SpeakCompare.acceptWord(result, targetOf(verse()), index);
+  render();
+}
+
+function clearResult() {
+  result = null; heardText = "";
+  $("transcript").value = ""; $("transcript").hidden = true;
+  $("liveCard").hidden = true; $("live").textContent = "";
+  showError("");
+}
+
+function go(newPos) {
+  if (listening) stopListening(true);
+  pos = (newPos + order.length) % order.length;
+  clearResult(); saveState(); render();
+}
+
+function showError(msg) { $("error").hidden = !msg; $("error").textContent = msg; }
+
+/* ---------- Controls ---------- */
+$("pack").onchange = (e) => { if (listening) stopListening(true); packIdx = +e.target.value; makeOrder(); clearResult(); saveState(); render(); };
+$("shuffle").onchange = () => { makeOrder(order[pos]); saveState(); render(); };
+$("showVerse").onchange = () => { saveState(); renderVerse(); };
+$("prev").onclick = () => go(pos - 1);
+$("next").onclick = () => go(pos + 1);
+$("again").onclick = () => { if (listening) stopListening(true); clearResult(); render(); };
+$("edit").onclick = () => {
+  const ta = $("transcript");
+  ta.hidden = !ta.hidden;
+  if (!ta.hidden) { ta.value = heardText; ta.focus(); }
+};
+$("transcript").oninput = (e) => check(e.target.value);
+
+/* ---------- Speech recognition ---------- */
+const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+let rec = null, listening = false, wantListening = false, discard = false;
+let committed = "", sessionFinal = "", restarts = 0, fatal = false;
+const FATAL = {
+  "not-allowed": "마이크 권한이 필요해요. 브라우저 설정에서 마이크를 허용해 주세요.",
+  "service-not-allowed": "이 브라우저에서 음성 인식을 쓸 수 없어요.",
+  "audio-capture": "마이크를 찾을 수 없어요.",
+  "network": "인터넷 연결을 확인해 주세요.",
+  "language-not-supported": "이 브라우저는 한국어 음성 인식을 지원하지 않아요.",
+};
+
+if (!SR) {
+  $("support").hidden = false;
+  $("support").textContent = "이 브라우저는 음성 인식을 지원하지 않아요. iPhone은 Safari, Android는 Chrome을 사용해 주세요. '구절 보기'로 읽기 연습은 할 수 있어요.";
+  $("mic").disabled = true;
+}
+
+// Android Chrome can repeat earlier text at the start of a later final result
+function mergePiece(acc, t) {
+  t = t.trim();
+  if (!acc) return t;
+  return t.startsWith(acc) ? t : acc + " " + t;
+}
+
+function renderLive(interim) {
+  const live = $("live");
+  live.textContent = [committed, sessionFinal].filter(Boolean).join(" ");
+  if (interim) {
+    const s = document.createElement("span");
+    s.className = "interim"; s.textContent = " " + interim;
+    live.appendChild(s);
+  }
+}
+
+function startSession() {
+  rec = new SR();
+  rec.lang = "ko-KR";
+  rec.continuous = true;
+  rec.interimResults = true;
+  rec.onresult = (e) => {
+    let fin = "", interim = "";
+    for (let i = 0; i < e.results.length; i++) {
+      const res = e.results[i];
+      if (res.isFinal) fin = mergePiece(fin, res[0].transcript);
+      else interim += res[0].transcript;
+    }
+    sessionFinal = fin;
+    renderLive(interim);
+  };
+  rec.onerror = (e) => {
+    if (FATAL[e.error]) { fatal = true; showError(FATAL[e.error]); }
+  };
+  rec.onend = () => {
+    committed = [committed, sessionFinal].filter(Boolean).join(" ");
+    sessionFinal = "";
+    // iPhone and Android stop after a pause; keep listening until the user taps stop
+    if (wantListening && !fatal && restarts < 30) {
+      restarts++;
+      try { startSession(); return; } catch (err) { showError(String(err)); }
+    }
+    finishListening();
+  };
+  rec.start();
+}
+
+function startListening() {
+  clearResult(); render();
+  committed = ""; sessionFinal = ""; restarts = 0; fatal = false; discard = false;
+  wantListening = true; listening = true;
+  $("mic").classList.add("on"); $("mic").textContent = "■ 멈추기";
+  $("liveCard").hidden = false;
+  try { startSession(); } catch (err) { showError(String(err)); finishListening(); }
+}
+
+function stopListening(discardResult) {
+  wantListening = false;
+  discard = !!discardResult;
+  if (rec) try { rec.stop(); } catch {}
+}
+
+function finishListening() {
+  if (!listening) return;
+  listening = false; wantListening = false;
+  $("mic").classList.remove("on"); $("mic").textContent = "🎤 말하기 시작";
+  $("liveCard").hidden = true;
+  if (discard) return;
+  if (!committed) {
+    if (!fatal) showError("아무 말도 들리지 않았어요. 다시 해 보세요.");
+    return;
+  }
+  check(committed);
+}
+
+$("mic").onclick = () => (listening ? stopListening(false) : startListening());
+
+/* ---------- Start ---------- */
+fetch("krv/verses.json")
+  .then((r) => { if (!r.ok) throw new Error(r.status); return r.json(); })
+  .then((data) => {
+    packs = data.packs;
+    $("credit").textContent = `본문: ${data.source}`;
+    packs.forEach((p, i) => {
+      const o = document.createElement("option");
+      o.value = i; o.textContent = `${p.name} (${p.verses.length})`;
+      $("pack").appendChild(o);
+    });
+    const saved = store.get(STATE_KEY, {});
+    packIdx = Number.isInteger(saved.pack) && packs[saved.pack] ? saved.pack : 0;
+    $("shuffle").checked = !!saved.shuffle;
+    $("showVerse").checked = !!saved.showVerse;
+    const savedVerse = Number.isInteger(saved.verse) && saved.verse < packs[packIdx].verses.length ? saved.verse : 0;
+    makeOrder(savedVerse);
+    render();
+  })
+  .catch(() => showError("구절을 불러오지 못했어요. 페이지를 새로 고침해 주세요."));
+</script>
+</body>
+</html>
