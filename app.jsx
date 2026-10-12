@@ -21,12 +21,6 @@ const PACK_RENAMES = Object.freeze({
   "Colossenses_prefixed.txt": "28 - Colossenses.txt",
   "1_Tessalonicenses_formatted_prefixed.txt": "29 - 1 Tessalonicenses.txt",
 });
-const BULK_DECK = {
-  key: "1_tessalonicenses",
-  label: "1 Tessalonicenses",
-  pack: "29 - 1 Tessalonicenses.txt",
-  dailyCap: 12,
-};
 
 // --- Fixed buckets for display only (scheduling is fixed by button) ---
 const BUCKETS = ["0D", "1D", "3D", "7D", "14D", "30D", "90D"];
@@ -108,7 +102,6 @@ function parseLineToCard(line, fileName) {
     ref,
     text,
     pack: canonicalPackName(fileName),
-    reviewSystem: "srs",
     srs: makeInitialSrs(),
     order: undefined,
     createdAt: now(),
@@ -124,7 +117,7 @@ function saveState(state) {
 }
 function loadState() {
   const raw = localStorage.getItem(LS_KEY);
-  if (!raw) return { cards: [], settings: defaultSettings(), capLog: {}, history: [], daily: { key: todayKey(), slow:0, fast:0 }, test: defaultTestState(), bulkProgress: defaultBulkProgress() };
+  if (!raw) return { cards: [], settings: defaultSettings(), capLog: {}, history: [], daily: { key: todayKey(), slow:0, fast:0 }, test: defaultTestState() };
   try {
     const parsed = JSON.parse(raw);
     if (!parsed.settings) parsed.settings = defaultSettings();
@@ -132,10 +125,9 @@ function loadState() {
     if (!parsed.history) parsed.history = [];
     if (!parsed.daily) parsed.daily = { key: todayKey(), slow:0, fast:0 };
     parsed.test = coerceTestState(parsed);
-    parsed.bulkProgress = coerceBulkProgress(parsed.bulkProgress);
     return parsed;
   } catch {
-    return { cards: [], settings: defaultSettings(), capLog: {}, history: [], daily: { key: todayKey(), slow:0, fast:0 }, test: defaultTestState(), bulkProgress: defaultBulkProgress() };
+    return { cards: [], settings: defaultSettings(), capLog: {}, history: [], daily: { key: todayKey(), slow:0, fast:0 }, test: defaultTestState() };
   }
 }
 
@@ -144,7 +136,6 @@ function loadState() {
 
 // Ensure srs.slow / srs.fast exist on a card
 function migrateCardSRS(card) {
-  const reviewSystem = card?.reviewSystem || card?.review_system || "srs";
   const pack = canonicalPackName(card?.pack);
   if (card?.srs?.slow || card?.srs?.fast) {
     const normalize = (sub) => ({
@@ -160,14 +151,13 @@ function migrateCardSRS(card) {
     return {
       ...card,
       pack,
-      reviewSystem,
       srs: {
         slow: normalize(card.srs.slow),
         fast: normalize(card.srs.fast),
       },
     };
   }
-  return { ...card, pack, reviewSystem, srs: makeInitialSrs() };
+  return { ...card, pack, srs: makeInitialSrs() };
 }
 
 // Assign 1-based `order` per pack; preserve existing order if present, else use createdAt then id
@@ -228,6 +218,7 @@ function upgradeSettings(settings) {
     s.schemaVersion = SCHEMA_VERSION;
   }
   if (s.mode === "full") s.mode = "review";
+  if (s.mode === "bulk") s.mode = "review"; // 1 Tessalonicenses mode was removed
   // ensure writing options exist
   if (!s.writing) s.writing = defaultWritingOptions();
   return s;
@@ -330,88 +321,6 @@ function coerceTestState(parsed) {
     ...t,
     goodById: t.goodById && typeof t.goodById === "object" ? t.goodById : {},
   };
-}
-
-function defaultBulkProgress() {
-  return {
-    deckKey: BULK_DECK.key,
-    cycle: 1,
-    reviewedIds: [],
-    dailyKey: null,
-    dailyAssignedIds: [],
-    updatedAt: 0,
-  };
-}
-
-function uniqueStrings(arr) {
-  return Array.from(new Set((Array.isArray(arr) ? arr : []).map(String).filter(Boolean)));
-}
-
-function coerceBulkProgress(raw) {
-  const p = raw && typeof raw === "object" ? raw : {};
-  const rawUpdatedAt = p.updatedAt || p.updated_at || 0;
-  const updatedAt =
-    typeof rawUpdatedAt === "string"
-      ? new Date(rawUpdatedAt).getTime()
-      : Number(rawUpdatedAt || 0);
-  return {
-    ...defaultBulkProgress(),
-    ...p,
-    deckKey: p.deckKey || p.deck_key || BULK_DECK.key,
-    cycle: Math.max(1, Number(p.cycle || 1)),
-    reviewedIds: uniqueStrings(p.reviewedIds || p.reviewed_ids),
-    dailyKey: p.dailyKey || p.daily_key || null,
-    dailyAssignedIds: uniqueStrings(p.dailyAssignedIds || p.daily_assigned_ids),
-    updatedAt: Number.isFinite(updatedAt) ? updatedAt : 0,
-  };
-}
-
-function isBulkCard(card) {
-  return (card?.reviewSystem || card?.review_system || "srs") === "bulk";
-}
-
-function isActiveBulkCard(card) {
-  return isBulkCard(card) && card?.pack === BULK_DECK.pack;
-}
-
-function sameStringArray(a, b) {
-  if (!Array.isArray(a) || !Array.isArray(b) || a.length !== b.length) return false;
-  return a.every((v, i) => v === b[i]);
-}
-
-function sameBulkProgress(a, b) {
-  return (
-    a?.deckKey === b?.deckKey &&
-    Number(a?.cycle || 1) === Number(b?.cycle || 1) &&
-    (a?.dailyKey || null) === (b?.dailyKey || null) &&
-    sameStringArray(a?.reviewedIds || [], b?.reviewedIds || []) &&
-    sameStringArray(a?.dailyAssignedIds || [], b?.dailyAssignedIds || [])
-  );
-}
-
-function normalizeBulkProgressForCards(progress, bulkCards) {
-  const p = coerceBulkProgress(progress);
-  if (!Array.isArray(bulkCards) || bulkCards.length === 0) return { ...p, deckKey: BULK_DECK.key };
-
-  const valid = new Set(bulkCards.map((c) => c.id));
-  let reviewedIds = uniqueStrings(p.reviewedIds).filter((id) => valid.has(id));
-  let dailyAssignedIds = uniqueStrings(p.dailyAssignedIds).filter((id) => valid.has(id));
-  let cycle = Math.max(1, Number(p.cycle || 1));
-  let dailyKey = p.dailyKey || null;
-
-  if (valid.size > 0 && reviewedIds.length >= valid.size) {
-    cycle += 1;
-    reviewedIds = [];
-    dailyAssignedIds = [];
-    dailyKey = null;
-  }
-
-  return { ...p, deckKey: BULK_DECK.key, cycle, reviewedIds, dailyKey, dailyAssignedIds };
-}
-
-function buildBulkQueue(bulkCards, progress) {
-  const reviewed = new Set(progress.reviewedIds || []);
-  return shuffleInPlace(bulkCards.filter((c) => !reviewed.has(c.id)).map((c) => c.id));
 }
 
 // --- NEW: tiny util to shuffle (Writing mode randomization) ---
@@ -638,7 +547,7 @@ function diffCharsLCS(typedRaw, targetRaw, opts = defaultWritingOptions()) {
 function defaultSettings() {
   return {
     sessionTarget: 50,
-    mode: "recognition",            // "recognition" | "review" | "writing" | "test" | "bulk"
+    mode: "recognition",            // "recognition" | "review" | "writing" | "test" | "read"
     showFirstNWords: 6,
     shuffle: false,
     dailyCapSlow: 60,
@@ -669,9 +578,6 @@ function App() {
   const [packManagerOpen, setPackManagerOpen] = useState(false);
   const [syncOpen, setSyncOpen] = useState(false);
   const [test, setTest] = useState(defaultTestState());
-  const [bulkProgress, setBulkProgress] = useState(defaultBulkProgress());
-  const [bulkQueue, setBulkQueue] = useState([]);
-  const [bulkSkippedIds, setBulkSkippedIds] = useState([]);
   const [hydrated, setHydrated] = useState(false);
   const fileInputRef = useRef(null);
 
@@ -704,7 +610,6 @@ function App() {
     const loadedHistory = Array.isArray(s.history) ? s.history : [];
     const loadedDaily = s.daily && s.daily.key === todayKey() ? s.daily : { key: todayKey(), slow: 0, fast: 0 };
     const loadedTest = s.test || defaultTestState();
-    const loadedBulkProgress = coerceBulkProgress(s.bulkProgress);
 
     setCards(migratedCards);
     setSettings(upgradedSettings);
@@ -712,14 +617,13 @@ function App() {
     setDaily(loadedDaily);
     setCapLog(s.capLog || {});
     setTest(loadedTest);
-    setBulkProgress(loadedBulkProgress);
     if (loadedTest.active) setFilterPack(loadedTest.pack);
     setHydrated(true);
   }, []);
   useEffect(() => {
     if (!hydrated) return;
-    saveState({ cards, settings, history, daily, capLog, test, bulkProgress });
-  }, [hydrated, cards, settings, history, daily, capLog, test, bulkProgress]);
+    saveState({ cards, settings, history, daily, capLog, test });
+  }, [hydrated, cards, settings, history, daily, capLog, test]);
 
   useEffect(() => {
     if (settings.mode === "test" && test.active) {
@@ -739,7 +643,6 @@ function App() {
         if (s.daily) setDaily(s.daily);
         if (s.capLog) setCapLog(s.capLog);
         if (s.test) setTest(s.test);
-        if (s.bulkProgress) setBulkProgress(coerceBulkProgress(s.bulkProgress));
       } catch (e) { console.warn('Failed to apply pulled state', e); }
     }
     const onPulled = () => applyPulled();
@@ -770,64 +673,7 @@ function App() {
   }, [settings.dailyCapSlow, settings.dailyCapFast, daily.key]);
 
 
-  const srsCards = useMemo(() => cards.filter((c) => !isBulkCard(c)), [cards]);
-  const activeBulkCards = useMemo(() => cards.filter(isActiveBulkCard), [cards]);
-  const activeBulkCardIdsKey = useMemo(() => activeBulkCards.map((c) => c.id).join("|"), [activeBulkCards]);
-  const bulkReviewedKey = (bulkProgress.reviewedIds || []).join("|");
-  const bulkDailyAssignedKey = (bulkProgress.dailyAssignedIds || []).join("|");
-
-  const packs = useMemo(() => ["ALL", ...Array.from(new Set(srsCards.map((c) => c.pack))).sort()], [srsCards]);
-
-  useEffect(() => {
-    setBulkProgress((prev) => {
-      const normalized = normalizeBulkProgressForCards(prev, activeBulkCards);
-      if (sameBulkProgress(prev, normalized)) return prev;
-      window.markDirty?.('bulkProgress');
-      return { ...normalized, updatedAt: now() };
-    });
-  }, [activeBulkCardIdsKey, bulkReviewedKey, bulkDailyAssignedKey, bulkProgress.cycle, bulkProgress.dailyKey]);
-
-  useEffect(() => {
-    if (!activeBulkCards.length) return;
-    const tk = todayKey();
-    setBulkProgress((prev) => {
-      const normalized = normalizeBulkProgressForCards(prev, activeBulkCards);
-      if (normalized.dailyKey === tk) return sameBulkProgress(prev, normalized) ? prev : { ...normalized, updatedAt: now() };
-
-      const reviewed = new Set(normalized.reviewedIds || []);
-      const valid = new Set(activeBulkCards.map((c) => c.id));
-      const carry = uniqueStrings(normalized.dailyAssignedIds)
-        .filter((id) => valid.has(id) && !reviewed.has(id));
-      const carrySet = new Set(carry);
-      const candidates = activeBulkCards
-        .filter((c) => !reviewed.has(c.id) && !carrySet.has(c.id))
-        .map((c) => c.id);
-      const added = shuffleInPlace(candidates).slice(0, Math.max(0, BULK_DECK.dailyCap - carry.length));
-      const next = {
-        ...normalized,
-        dailyKey: tk,
-        dailyAssignedIds: carry.concat(added),
-      };
-      if (sameBulkProgress(prev, next)) return prev;
-      window.markDirty?.('bulkProgress');
-      return { ...next, updatedAt: now() };
-    });
-  }, [activeBulkCardIdsKey, bulkProgress.cycle, bulkProgress.dailyKey, bulkReviewedKey]);
-
-  useEffect(() => {
-    if (settings.mode !== "bulk") return;
-    const normalized = normalizeBulkProgressForCards(bulkProgress, activeBulkCards);
-    const available = new Set(activeBulkCards.filter((c) => !(normalized.reviewedIds || []).includes(c.id)).map((c) => c.id));
-    setBulkQueue((prev) => {
-      const filtered = prev.filter((id) => available.has(id));
-      if (filtered.length > 0) return sameStringArray(prev, filtered) ? prev : filtered;
-      return buildBulkQueue(activeBulkCards, normalized);
-    });
-  }, [settings.mode, activeBulkCardIdsKey, bulkProgress.cycle, bulkReviewedKey]);
-
-  useEffect(() => {
-    setBulkSkippedIds([]);
-  }, [settings.mode, bulkProgress.dailyKey]);
+  const packs = useMemo(() => ["ALL", ...Array.from(new Set(cards.map((c) => c.pack))).sort()], [cards]);
 
   // History counts for header (MUST be above dueCards)
   const dailyReviewed = useMemo(() => {
@@ -849,10 +695,10 @@ function App() {
   }, [capLog]);
 
   // Due list (used by recognition/review)
-  const normalDueCards = useMemo(() => {
+  const dueCards = useMemo(() => {
     const t = now();
     const key = settings.mode === "recognition" ? "fast" : "slow";
-    let list = srsCards.filter((c) => (c?.srs?.[key]?.nextDue ?? 0) <= t);
+    let list = cards.filter((c) => (c?.srs?.[key]?.nextDue ?? 0) <= t);
     if (filterPack !== "ALL") list = list.filter((c) => c.pack === filterPack);
     list.sort((a, b) => {
       if (filterPack === "ALL" && a.pack !== b.pack) {
@@ -867,38 +713,32 @@ function App() {
     });
     const remain = Math.max(0, dailyRemaining(settings.mode));
     return list.slice(0, remain);
-  }, [srsCards, filterPack, settings.mode, daily, dailyReviewed, todayCaps]); // (deps ok if you like)
+  }, [cards, filterPack, settings.mode, daily, dailyReviewed, todayCaps]); // (deps ok if you like)
 
-  const bulkDailyCards = useMemo(() => {
-    if (settings.mode !== "review") return [];
-    const byId = new Map(activeBulkCards.map((c) => [c.id, c]));
-    const reviewed = new Set(bulkProgress.reviewedIds || []);
-    const skipped = new Set(bulkSkippedIds);
-    return uniqueStrings(bulkProgress.dailyAssignedIds)
-      .filter((id) => !reviewed.has(id) && !skipped.has(id))
-      .map((id) => byId.get(id))
-      .filter(Boolean);
-  }, [settings.mode, activeBulkCards, bulkProgress.reviewedIds, bulkProgress.dailyAssignedIds, bulkSkippedIds]);
 
-  const dueCards = useMemo(() => {
-    return settings.mode === "review" ? normalDueCards.concat(bulkDailyCards) : normalDueCards;
-  }, [settings.mode, normalDueCards, bulkDailyCards]);
-
+  // Read mode: the whole selected pack in pack order (display only; never scheduled)
+  const readCards = useMemo(() => {
+    if (settings.mode !== "read" || filterPack === "ALL") return [];
+    return cards
+      .filter((c) => c.pack === filterPack)
+      .sort((a, b) => {
+        const ao = a.order ?? Number.POSITIVE_INFINITY, bo = b.order ?? Number.POSITIVE_INFINITY;
+        if (ao !== bo) return ao - bo;
+        return String(a.ref || "").localeCompare(String(b.ref || ""));
+      });
+  }, [cards, filterPack, settings.mode]);
 
   // Current card source:
+  // - Read: none (no grading)
   // - Writing: always from sessionQueue
   // - Others: from sessionQueue if present else dueCards[0]
   const currentCard = useMemo(() => {
-    if (settings.mode === "bulk") {
-      if (!bulkQueue.length) return null;
-      const id = bulkQueue[0];
-      return activeBulkCards.find((c) => c.id === id) || null;
-    }
+    if (settings.mode === "read") return null;
     // Test mode uses its own queue, not sessionQueue
     if (settings.mode === "test") {
       if (!test.active || test.queue.length === 0) return null;
       const id = test.queue[0];
-      return srsCards.find(c => c.id === id) || null;
+      return cards.find(c => c.id === id) || null;
     }
     // SessionQueue (manual / writing / normal)
     if (sessionQueue.length > 0) {
@@ -907,13 +747,16 @@ function App() {
     }
     if (settings.mode === "writing") return null; // require Start Session / manual
     return dueCards[0];
-  }, [sessionQueue, cards, srsCards, dueCards, settings.mode, test.active, test.queue, bulkQueue, activeBulkCards]);
+  }, [sessionQueue, cards, dueCards, settings.mode, test.active, test.queue]);
 
   // Keyboard shortcuts (DISABLE in writing mode) — moved below currentCard
   useEffect(() => {
     function onKey(e) {
       const tag = (e.target && e.target.tagName) ? e.target.tagName.toLowerCase() : "";
       if (tag === "input" || tag === "textarea" || e.target.isContentEditable) return;
+
+      // Read mode: display only, no grading
+      if (settings.mode === "read") return;
 
       // TEST mode: A=Again, G=Good
       if (settings.mode === "test") {
@@ -923,22 +766,8 @@ function App() {
         return;
       }
 
-      if (settings.mode === "bulk") {
-        const k = (e.key || "").toLowerCase();
-        if (k === "r" || k === "enter") { e.preventDefault(); handleBulkReviewed(); }
-        if (k === "s") { e.preventDefault(); handleBulkSkip(); }
-        return;
-      }
-
       // Writing: disable SRS shortcuts
       if (settings.mode === "writing") return;
-
-      if (currentCard && isActiveBulkCard(currentCard)) {
-        const k = (e.key || "").toLowerCase();
-        if (k === "r" || k === "enter") { e.preventDefault(); handleBulkReviewed(); }
-        if (k === "s") { e.preventDefault(); handleBulkSkip(); }
-        return;
-      }
 
       // Recognition/Review shortcuts
       const lbl = SHORTCUT_MAP[e.key.toLowerCase?.() || e.key];
@@ -948,7 +777,7 @@ function App() {
     }
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [currentCard, settings.mode, test.active, test.queue, bulkQueue, bulkProgress]);
+  }, [currentCard, settings.mode, test.active, test.queue]);
 
   // Reset "submitted" when card/mode changes
   useEffect(() => { setWritingSubmitted(false); }, [settings.mode, currentCard?.id]);
@@ -967,20 +796,12 @@ function App() {
       startTestSession();
       return;
     }
-    if (settings.mode === "bulk") {
-      const normalized = normalizeBulkProgressForCards(bulkProgress, activeBulkCards);
-      setBulkQueue(buildBulkQueue(activeBulkCards, normalized));
-      setSessionStart(now());
-      setCompleted(0);
-      setBulkSkippedIds([]);
-      return;
-    }
     setSessionStart(now());
     setCompleted(0);
 
     if (settings.mode === "writing") {
       // Random pool = all (pack-filtered), ignoring due
-      let pool = filterPack === "ALL" ? srsCards.slice() : srsCards.filter(c => c.pack === filterPack);
+      let pool = filterPack === "ALL" ? cards.slice() : cards.filter(c => c.pack === filterPack);
       pool = shuffleInPlace(pool);
       setSessionQueue(pool.map(c => c.id));
       setWritingSubmitted(false);
@@ -1002,7 +823,7 @@ function App() {
     const pack = filterPack; // respect the UI filter
     // If we need to (re)seed
     if (!test.active || test.pack !== pack || !Array.isArray(test.queue) || test.queue.length === 0) {
-      const q = buildTestQueue(srsCards, pack);
+      const q = buildTestQueue(cards, pack);
       if (q.length === 0) {
         // nothing to test—reset counters and bail
         setTest({ ...defaultTestState(), active: false, pack });
@@ -1066,7 +887,7 @@ function App() {
       console.warn("Server delete on Reset skipped/failed:", e);
     }
 
-    const q = buildTestQueue(srsCards, pack);
+    const q = buildTestQueue(cards, pack);
     if (q.length === 0) {
       setTest({ ...defaultTestState(), active: false, pack });
       setCompleted(0);
@@ -1087,7 +908,7 @@ function App() {
   // Keep test queue valid if cards change (e.g., deletions/imports)
   useEffect(() => {
     if (!test.active) return;
-    const valid = new Set(srsCards.map(c => c.id));
+    const valid = new Set(cards.map(c => c.id));
     const filteredQ = test.queue.filter(id => valid.has(id));
     const filteredGood = Object.fromEntries(
       Object.entries(test.goodById).filter(([id]) => valid.has(id))
@@ -1109,7 +930,7 @@ function App() {
         active: newActive
       }));
     }
-  }, [srsCards]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [cards]); // eslint-disable-line react-hooks/exhaustive-deps
 
   function popQueueIfHeadIs(id) {
     setSessionQueue((q) => (q.length && q[0] === id ? q.slice(1) : q));
@@ -1122,45 +943,8 @@ function App() {
     setWritingSubmitted(false);
   }
 
-  function handleBulkReviewed() {
-    if (!currentCard || !isActiveBulkCard(currentCard)) return;
-    setBulkProgress((prev) => {
-      const normalized = normalizeBulkProgressForCards(prev, activeBulkCards);
-      if ((normalized.reviewedIds || []).includes(currentCard.id)) return normalized;
-      const next = {
-        ...normalized,
-        reviewedIds: (normalized.reviewedIds || []).concat(currentCard.id),
-        updatedAt: now(),
-      };
-      window.markDirty?.('bulkProgress');
-      return next;
-    });
-    setCompleted((x) => x + 1);
-    popQueueIfHeadIs(currentCard.id);
-    setBulkQueue((q) => (q.length && q[0] === currentCard.id ? q.slice(1) : q.filter((id) => id !== currentCard.id)));
-    setBulkSkippedIds((ids) => ids.filter((id) => id !== currentCard.id));
-  }
-
-  function handleBulkSkip() {
-    if (!currentCard || !isActiveBulkCard(currentCard)) return;
-    if (settings.mode === "bulk") {
-      setBulkQueue((q) => {
-        if (!q.length || q[0] !== currentCard.id) return q;
-        return q.length > 1 ? q.slice(1).concat(q[0]) : q;
-      });
-    } else {
-      popQueueIfHeadIs(currentCard.id);
-      setBulkSkippedIds((ids) => ids.includes(currentCard.id) ? ids : ids.concat(currentCard.id));
-    }
-    setWritingSubmitted(false);
-  }
-
   function handleGrade(label) {
     if (!currentCard) return;
-    if (isActiveBulkCard(currentCard)) {
-      handleBulkReviewed();
-      return;
-    }
 
     // scheduleKey for SRS write: slow for writing/review, fast for recognition
     const scheduleKey = settings.mode === "recognition" ? "fast" : "slow";
@@ -1262,7 +1046,7 @@ function App() {
 
   function exportJson() {
     const state = JSON.parse(localStorage.getItem("scripture_srs_v1") || "{}");
-    const blob = new Blob([JSON.stringify({ cards, settings, history, daily, capLog, test: state.test || null, bulkProgress }, null, 2)], { type: "application/json" });
+    const blob = new Blob([JSON.stringify({ cards, settings, history, daily, capLog, test: state.test || null }, null, 2)], { type: "application/json" });
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
     a.href = url;
@@ -1295,9 +1079,8 @@ function App() {
         if (Array.isArray(data.history)) setHistory(data.history);
         if (data.daily) setDaily(data.daily);
         if (data.capLog) setCapLog(data.capLog);
-        if (data.bulkProgress) setBulkProgress(coerceBulkProgress(data.bulkProgress));
         // after successful import:
-        window.markDirty?.('cards', 'settings', 'history', 'daily', 'capLog', 'bulkProgress');
+        window.markDirty?.('cards', 'settings', 'history', 'daily', 'capLog');
 
         alert("Backup imported.");
       } catch {
@@ -1325,13 +1108,9 @@ function App() {
   }
 
   const sessionElapsedMin = sessionStart ? Math.round((now() - sessionStart) / 6000) / 10 : 0;
-  const bulkAvailableCount = activeBulkCards.filter((c) => !(bulkProgress.reviewedIds || []).includes(c.id)).length;
-  const currentIsBulk = isActiveBulkCard(currentCard);
 
   // Helpers for UI conditions
   const showGradeButtons = !(settings.mode === "writing" && !writingSubmitted);
-  const showBulkButtons = currentIsBulk && settings.mode !== "writing";
-  const showSrsGradeButtons = showGradeButtons && !showBulkButtons;
 
   return (
     <div className="min-h-screen bg-gray-50 p-4 pb-28 sm:pb-4">
@@ -1341,10 +1120,10 @@ function App() {
           <div className="flex flex-wrap items-center gap-2 w-full sm:w-auto">
             <button className="px-3 py-2 rounded-xl bg-gray-200 shrink-0" onClick={() => setPackManagerOpen(true)}>Manage Packs</button>
             <div className="text-sm text-gray-600 min-w-0">
-              {settings.mode === "bulk"
-                ? <>{BULK_DECK.label}: left {bulkAvailableCount} / {activeBulkCards.length} | {sessionElapsedMin}m</>
-                : settings.mode === "test"
+              {settings.mode === "test"
                 ? <>Test: left {test.queue.length} · done {test.total - test.queue.length} / {test.total} | {sessionElapsedMin}m</>
+                : settings.mode === "read"
+                ? <>Read: {filterPack === "ALL" ? "choose a pack" : `${readCards.length} verse${readCards.length === 1 ? "" : "s"}`}</>
                 : <>Due: {dueCards.length} | Done: {completed} | {sessionElapsedMin}m</>}
             </div>
             {/* Sync chip (unchanged) */}
@@ -1371,7 +1150,7 @@ function App() {
         </header>
 
         {/* Daily goal status bar */}
-        {settings.mode !== "test" && settings.mode !== "bulk" && (
+        {settings.mode !== "test" && settings.mode !== "read" && (
           <div className="text-xs text-gray-500">
             Daily {settings.mode === "recognition" ? "FAST" : "SLOW"} goal:{" "}
             {settings.mode === "recognition" ? todayCaps.fast : todayCaps.slow}
@@ -1392,7 +1171,6 @@ function App() {
                 setSettings({ ...settings, mode: e.target.value });
                 setSessionQueue([]);
                 setCompleted(0);
-                setBulkSkippedIds([]);
               }}
             >
               <option value="recognition">Recognition (fast)</option>
@@ -1400,12 +1178,12 @@ function App() {
               {/* NEW: Writing mode option */}
               <option value="writing">Writing (slow)</option>
               <option value="test">Test (random, 2-button)</option>
-              <option value="bulk">{BULK_DECK.label}</option>
+              <option value="read">Read (whole pack)</option>
             </select>
           </div>
           <div>
             <label className="block text-sm font-medium">Filter Pack</label>
-            <select className="mt-1 w-full border rounded-xl p-2" value={filterPack} onChange={(e) => setFilterPack(e.target.value)} disabled={settings.mode === "bulk"}>
+            <select className="mt-1 w-full border rounded-xl p-2" value={filterPack} onChange={(e) => setFilterPack(e.target.value)}>
               {packs.map((p) => (<option key={p} value={p}>{p}</option>))}
             </select>
           </div>
@@ -1431,33 +1209,33 @@ function App() {
         </section>
 
         {/* Session Controls */}
-        <section className="rounded-2xl shadow p-4 bg-white flex items-center justify-between gap-2">
-          <div className="text-sm text-gray-600">
-            {settings.mode === "bulk"
-              ? `${BULK_DECK.label}: ${bulkAvailableCount} left in cycle.`
-              : settings.mode === "writing"
+        {settings.mode !== "read" && (
+          <section className="rounded-2xl shadow p-4 bg-white flex items-center justify-between gap-2">
+            <div className="text-sm text-gray-600">
+              {settings.mode === "writing"
                 ? "Writing session uses random order over the pack."
                 : `Cards due now: ${dueCards.length}`}
-          </div>
-          <div className="flex gap-2">
-            <button
-              className="px-4 py-2 rounded-xl bg-indigo-600 text-white"
-              onClick={startSession}
-            >
-              Start Session
-            </button>
-
-            {settings.mode === "test" && (
+            </div>
+            <div className="flex gap-2">
               <button
-                className="px-4 py-2 rounded-xl bg-rose-100 text-rose-800"
-                onClick={resetTestSession}
-                title="Reset Test progress and reshuffle all verses for this pack"
+                className="px-4 py-2 rounded-xl bg-indigo-600 text-white"
+                onClick={startSession}
               >
-                Reset Test
+                Start Session
               </button>
-            )}
-          </div>
-        </section>
+
+              {settings.mode === "test" && (
+                <button
+                  className="px-4 py-2 rounded-xl bg-rose-100 text-rose-800"
+                  onClick={resetTestSession}
+                  title="Reset Test progress and reshuffle all verses for this pack"
+                >
+                  Reset Test
+                </button>
+              )}
+            </div>
+          </section>
+        )}
 
         {/* Review / Writing Card */}
         <section className="rounded-2xl shadow p-6 bg-white">
@@ -1473,12 +1251,12 @@ function App() {
             </div>
           )}
 
-          {!currentCard ? (
+          {settings.mode === "read" ? (
+            <ReadPackView pack={filterPack} cards={readCards} />
+          ) : !currentCard ? (
             <div className="text-center text-gray-500">
               {settings.mode === "writing"
                 ? "Start a writing session (randomized) or choose verses from 'View Verses' → 'Write selected now'."
-                : settings.mode === "bulk"
-                  ? (activeBulkCards.length ? "Preparing 1 Tessalonicenses…" : "No 1 Tessalonicenses bulk cards loaded.")
                 : settings.mode === "test"
                   ? (test.active ? "All done! Press Reset Test to restart." : "Press Start Session to begin Test.")
                   : "No cards due. Great job!"}
@@ -1491,7 +1269,7 @@ function App() {
                   Pack: {currentCard.pack}
                   {" · "}
                   {currentCard?.order ? `${ordinal(currentCard.order)} Verse` : "Verse"}
-                  {settings.mode !== "test" && !currentIsBulk && <> · {getActiveBucket(currentCard, settings.mode)}</>}
+                  {settings.mode !== "test" && <> · {getActiveBucket(currentCard, settings.mode)}</>}
                 </div>
               ) : (
                 <div className="flex items-center justify-between text-xs text-gray-600">
@@ -1508,7 +1286,7 @@ function App() {
               <div className="text-lg font-semibold">
                 {settings.mode === "recognition" ? (
                   <CardFrontRecognition card={currentCard} words={settings.showFirstNWords} />
-                ) : (settings.mode === "review" || settings.mode === "test" || settings.mode === "bulk") ? (
+                ) : (settings.mode === "review" || settings.mode === "test") ? (
                   <div><div className="text-gray-700 text-sm">{currentCard.ref}</div></div>
                 ) : (
                   <div className="text-gray-700 text-sm">{currentCard.ref}</div>
@@ -1520,8 +1298,6 @@ function App() {
                 <div className="text-[11px] text-gray-500">
                   {settings.mode === "test"
                     ? "Shortcuts (Test): A = Again, G = Good."
-                    : currentIsBulk
-                      ? "Shortcuts: R or Enter = Reviewed, S = Skip."
                     : "Shortcuts: 1, 3, 7, 0 (14D), 9 (30D), 6 (90D)."}
                 </div>
               )}
@@ -1533,7 +1309,7 @@ function App() {
                 </div>
               )}
 
-              {(settings.mode === "review" && !currentIsBulk) && (
+              {settings.mode === "review" && (
                 <div className="rounded-2xl border p-4 bg-gray-50 flex justify-center">
                   <div className="text-base whitespace-pre-wrap break-words font-mono w-[25ch]">
                     {currentCard.text}
@@ -1541,7 +1317,7 @@ function App() {
                 </div>
               )}
 
-              {(settings.mode === "test" || currentIsBulk) && (
+              {settings.mode === "test" && (
                 <div className="rounded-2xl border p-4 bg-gray-50 flex justify-center">
                   <div className="text-base whitespace-pre-wrap break-words font-mono w-[25ch]">
                     {currentCard.text}
@@ -1561,26 +1337,7 @@ function App() {
               )}
 
               {/* SRS buttons (desktop) – hidden until Submit in writing */}
-              {showBulkButtons ? (
-                <div className="hidden sm:flex gap-2">
-                  <button
-                    title="Reviewed (R)"
-                    aria-label="Reviewed (R)"
-                    className="px-3 py-2 rounded-xl bg-emerald-600 text-white"
-                    onClick={handleBulkReviewed}
-                  >
-                    <div className="font-semibold">Reviewed</div>
-                  </button>
-                  <button
-                    title="Skip (S)"
-                    aria-label="Skip (S)"
-                    className="px-3 py-2 rounded-xl bg-gray-200"
-                    onClick={handleBulkSkip}
-                  >
-                    <div className="font-semibold">Skip</div>
-                  </button>
-                </div>
-              ) : settings.mode === "test" ? (
+              {settings.mode === "test" ? (
                 // TEST desktop buttons (2)
                 <div className="hidden sm:flex gap-2">
                   <button
@@ -1601,7 +1358,7 @@ function App() {
                   </button>
                 </div>
               ) : (
-                showSrsGradeButtons && (
+                showGradeButtons && (
                   <div className="hidden sm:grid sm:grid-cols-6 gap-2">
                     <button
                       title="1 day (1)"
@@ -1661,18 +1418,7 @@ function App() {
               )}
 
               {/* Sticky mobile grading bar – hidden until Submit in writing */}
-              {showBulkButtons ? (
-                <div className="sm:hidden fixed left-0 right-0 bottom-0 z-40 border-t bg-white/95 backdrop-blur p-3">
-                  <div className="grid grid-cols-2 gap-2">
-                    <button title="Reviewed (R)" aria-label="Reviewed (R)"
-                      className="px-3 py-2 rounded-xl bg-emerald-600 text-white"
-                      onClick={handleBulkReviewed}><div className="font-semibold">Reviewed</div></button>
-                    <button title="Skip (S)" aria-label="Skip (S)"
-                      className="px-3 py-2 rounded-xl bg-gray-200"
-                      onClick={handleBulkSkip}><div className="font-semibold">Skip</div></button>
-                  </div>
-                </div>
-              ) : settings.mode === "test" ? (
+              {settings.mode === "test" ? (
                 // TEST mobile 2-button bar
                 <div className="sm:hidden fixed left-0 right-0 bottom-0 z-40 border-t bg-white/95 backdrop-blur p-3">
                   <div className="grid grid-cols-2 gap-2">
@@ -1685,7 +1431,7 @@ function App() {
                   </div>
                 </div>
               ) : (
-                showSrsGradeButtons && (
+                showGradeButtons && (
                   <div className="sm:hidden fixed left-0 right-0 bottom-0 z-40 border-t bg-white/95 backdrop-blur p-3">
                     <div className="grid grid-cols-3 gap-2">
                       <button
@@ -1754,12 +1500,12 @@ function App() {
         {/* Stats */}
         <section className="rounded-2xl shadow p-4 bg-white">
           <h2 className="font-semibold mb-2">Stats</h2>
-          <Stats cards={srsCards} />
+          <Stats cards={cards} />
         </section>
 
         {/* View Verses */}
         <VersesView
-          cards={srsCards}
+          cards={cards}
           packs={packs}
           currentPack={versesPack}
           onChangePack={setVersesPack}
@@ -1767,6 +1513,7 @@ function App() {
           onChangeScheduleKey={setViewScheduleKey}
           onStartManual={(ids) => {
             if (!ids?.length) return;
+            if (settings.mode === "read") setSettings(s => ({ ...s, mode: "review" }));
             setSessionQueue(ids);
             setCompleted(0);
             setSessionStart(now());
@@ -1789,7 +1536,7 @@ function App() {
         {/* Pack Manager Modal */}
         {packManagerOpen && (
           <PackManager
-            cards={srsCards}
+            cards={cards}
             onClose={() => setPackManagerOpen(false)}
             onDelete={async (packsToDelete) => {
               const norm = (s) => {
@@ -1831,7 +1578,7 @@ function App() {
                 return n.replace(/\u00A0/g, " ").replace(/\s+/g, " ").trim().toLowerCase();
               };
               const exp = new Set(packsToExport.map(norm));
-              const subset = srsCards.filter((c) => exp.has(norm(c.pack)));
+              const subset = cards.filter((c) => exp.has(norm(c.pack)));
               if (subset.length === 0) { alert("No cards found for the selected packs."); return; }
               const blob = new Blob([JSON.stringify({ cards: subset, settings: defaultSettings() }, null, 2)], { type: "application/json" });
               const url = URL.createObjectURL(blob);
@@ -2234,6 +1981,32 @@ function Stats({ cards }) {
           ))}
         </div>
       </div>
+    </div>
+  );
+}
+
+/* =========================
+   Read mode: every verse of one pack, in order, on one page.
+   Display only — no grading, history, or schedule changes.
+========================= */
+function ReadPackView({ pack, cards }) {
+  if (!pack || pack === "ALL") {
+    return <div className="text-center text-gray-500">Choose a pack in 'Filter Pack' to read all of its verses.</div>;
+  }
+  if (!cards.length) {
+    return <div className="text-center text-gray-500">No verses in this pack.</div>;
+  }
+  return (
+    <div>
+      <div className="text-xs text-gray-500">Pack: {pack} · {cards.length} verse{cards.length === 1 ? "" : "s"}</div>
+      <ol className="mt-4 divide-y">
+        {cards.map((c, i) => (
+          <li key={c.id} className="py-4 first:pt-0 last:pb-0">
+            <div className="text-sm font-semibold text-gray-700">{c.order ?? i + 1}. {c.ref}</div>
+            <div className="mt-1 text-base whitespace-pre-wrap break-words">{c.text}</div>
+          </li>
+        ))}
+      </ol>
     </div>
   );
 }
