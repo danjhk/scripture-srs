@@ -1,0 +1,445 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>Speaking Test</title>
+<meta name="robots" content="noindex" />
+<style>
+  :root {
+    --bg: #f8fafc; --card: #ffffff; --text: #111827; --muted: #6b7280; --border: #e5e7eb;
+    --ok: #bbf7d0; --ok-text: #14532d; --near: #fde68a; --near-text: #713f12;
+    --bad: #fecaca; --bad-text: #7f1d1d; --accent: #4f46e5; --rec: #dc2626;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; max-width: 100%; overflow-x: hidden; }
+  body { background: var(--bg); color: var(--text); font: 16px/1.5 system-ui, -apple-system, "Apple SD Gothic Neo", "Noto Sans KR", sans-serif; }
+  main { max-width: 640px; margin: 0 auto; padding: 16px; }
+  h1 { font-size: 18px; margin: 0 0 4px; }
+  .muted { color: var(--muted); font-size: 13px; }
+  .card { background: var(--card); border: 1px solid var(--border); border-radius: 14px; padding: 14px; margin-top: 12px; }
+  .row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+  select, textarea, button { font: inherit; }
+  select { flex: 1; min-width: 0; padding: 8px; border-radius: 10px; border: 1px solid var(--border); background: var(--card); color: var(--text); }
+  button { padding: 8px 12px; border-radius: 10px; border: 1px solid var(--border); background: var(--card); color: var(--text); cursor: pointer; }
+  button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+  #mic { width: 100%; padding: 16px; font-size: 18px; font-weight: 600; background: var(--accent); border: 0; color: #fff; border-radius: 14px; margin-top: 12px; }
+  #mic.on { background: var(--rec); }
+  #mic:disabled { opacity: .5; }
+  .ref { font-weight: 600; }
+  .verse { font-size: 18px; line-height: 1.8; word-break: keep-all; overflow-wrap: anywhere; }
+  .hidden-verse { color: var(--muted); font-style: italic; }
+  #live { min-height: 1.5em; font-size: 17px; }
+  #live .interim { color: var(--muted); }
+  textarea { width: 100%; min-height: 90px; padding: 10px; border-radius: 10px; border: 1px solid var(--border); background: var(--card); color: var(--text); font-size: 16px; }
+  .ok { background: var(--ok); color: var(--ok-text); }
+  .near { background: var(--near); color: var(--near-text); }
+  .bad { background: var(--bad); color: var(--bad-text); }
+  .legend span { padding: 0 6px; border-radius: 4px; margin-right: 6px; font-size: 13px; }
+  .score { font-size: 20px; font-weight: 700; }
+  .err { color: var(--rec); font-size: 14px; }
+  details { margin-top: 8px; }
+  pre { white-space: pre-wrap; word-break: break-all; font-size: 12px; background: var(--bg); padding: 8px; border-radius: 8px; }
+  label { font-size: 14px; display: flex; gap: 6px; align-items: center; }
+</style>
+</head>
+<body>
+<main>
+  <h1>Speaking test · 개역한글</h1>
+  <div class="muted">Throwaway test page. Speak a verse and see how the phone's transcriber does.</div>
+  <div id="support" class="err"></div>
+
+  <div class="card">
+    <div class="row">
+      <button id="prev" aria-label="Previous verse">◀</button>
+      <select id="pick" aria-label="Verse"></select>
+      <button id="next" aria-label="Next verse">▶</button>
+    </div>
+    <div class="row" style="margin-top:10px">
+      <label><input type="checkbox" id="showVerse" checked /> Show verse</label>
+      <label><input type="checkbox" id="continuous" checked /> Continuous</label>
+      <label><input type="checkbox" id="autoRestart" checked /> Keep listening after pauses</label>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="muted" id="pack"></div>
+    <div class="ref" id="ref"></div>
+    <div class="verse" id="target"></div>
+  </div>
+
+  <button id="mic">🎤 Start speaking</button>
+  <div class="err" id="error"></div>
+
+  <div class="card">
+    <div class="muted">Heard (live)</div>
+    <div id="live"></div>
+  </div>
+
+  <div class="card" id="resultCard" hidden>
+    <div class="row" style="justify-content:space-between">
+      <div class="score" id="score"></div>
+      <div class="legend"><span class="ok">same</span><span class="near">sounds same</span><span class="bad">missed / wrong</span></div>
+    </div>
+    <div class="muted" style="margin-top:8px">Verse, coloured by what was heard</div>
+    <div class="verse" id="targetColored"></div>
+    <div class="muted" style="margin-top:10px">Transcript, coloured by what matches (red = not in the verse)</div>
+    <div class="verse" id="heardColored"></div>
+    <div class="muted" style="margin-top:10px">Edit the transcript to fix a mishearing; the colours update as you type.</div>
+    <textarea id="transcript" lang="ko"></textarea>
+    <details>
+      <summary class="muted">Raw recognizer output</summary>
+      <pre id="raw"></pre>
+    </details>
+  </div>
+
+  <div class="card">
+    <div class="row" style="justify-content:space-between">
+      <div><b>Attempts</b> <span class="muted" id="attemptCount"></span></div>
+      <div class="row">
+        <button id="copy" class="primary">Copy results</button>
+        <button id="clear">Clear</button>
+      </div>
+    </div>
+    <div class="muted">Paste the copied results back into Claude so we can see how it went.</div>
+    <textarea id="copyFallback" hidden readonly></textarea>
+  </div>
+</main>
+
+<script>
+/* ---------- Sample verses (개역한글, from the eunjin account) ---------- */
+const VERSES = [
+  { pack: "5확신", ref: "요일 5:11,12", heading: "", title: "구원의 확신", body: "또 증거는 이것이니 하나님이 우리에게 영생을 주신 것과 이 생명이 그의 아들 안에 있는 그것이니라 아들이 있는 자에게는 생명이 있고 하나님의 아들이 없는 자에게는 생명이 없느니라" },
+  { pack: "5확신", ref: "요일 1:9", heading: "", title: "사죄의 확신", body: "만일 우리가 우리 죄를 자백하면 저는 미쁘시고 의로우사 우리 죄를 사하시며 모든 불의에서 우리를 깨끗케 하실 것이요" },
+  { pack: "8동행", ref: "요 15:5", heading: "", title: "그리스도 안의 생활", body: "나는 포도나무요 너희는 가지니 저가 내 안에 내가 저 안에 있으면 이 사람은 과실을 많이 맺나니 나를 떠나서는 너희가 아무것도 할 수 없음이라" },
+  { pack: "60구절", ref: "고후 5:17", heading: "", title: "중심되신 그리스도", body: "그런즉 누구든지 그리스도 안에 있으면 새로운 피조물이라 이전 것은 지나갔으니 보라 새 것이 되었도다" },
+  { pack: "60구절", ref: "민 23:19", heading: "", title: "성실", body: "하나님은 인생이 아니시니 식언치 않으시고 인자가 아니시니 후회가 없으시도다 어찌 그 말씀하신 바를 행치 않으시며 하신 말씀을 실행치 않으시랴" },
+  { pack: "DEP1 - 구원의 확신", ref: "벧전 1:3", heading: "", title: "그리스도 안에서 거듭남", body: "찬송하리로다 우리 주 예수 그리스도의 아버지 하나님이 그 많으신 긍휼대로 예수 그리스도의 죽은 자 가운데서 부활하심으로 말미암아 우리를 거듭나게 하사 산 소망이 있게 하시며" },
+  { pack: "DEP2 - Quiet Time", ref: "고전 1:9", heading: "왜 Quiet Time을 가져야 하는가?", title: "하나님이 교제를 원하심", body: "너희를 불러 그의 아들 예수 그리스도 우리 주로 더불어 교제케 하시는 하나님은 미쁘시도다" },
+  { pack: "DEP2 - Quiet Time", ref: "시 90:14", heading: "Quiet Time이란 무엇인가?", title: "매일의 만족을 얻는 것", body: "아침에 주의 인자로 우리를 만족케 하사 우리 평생에 즐겁고 기쁘게 하소서" },
+  { pack: "DEP3 - 말씀", ref: "마 8:8", heading: "말씀의 가치", title: "문제를 해결해 주심", body: "백부장이 대답하여 가로되 주여 내 집에 들어오심을 나는 감당치 못하겠사오니 다만 말씀으로만 하옵소서 그러면 내 하인이 낫겠삽나이다" },
+  { pack: "DEP4 - 기도", ref: "살전 5:17", heading: "기도의 명령", title: "쉬지 말고 기도할 것", body: "쉬지 말고 기도하라" },
+  { pack: "DEP4 - 기도", ref: "대상 29:11-13", heading: "기도의 손", title: "찬양", body: "여호와여 광대하심과 권능과 영광과 이김과 위엄이 다 주께 속하였으니 천지에 있는 것이 다 주의 것이로소이다 여호와여 주권도 주께 속하였사오니 주는 높으사 만유의 머리심이니이다 부와 귀가 주께로 말미암고 또 주는 만유의 주재가 되사 손에 권세와 능력이 있사오니 모든 자를 크게 하심과 강하게 하심이 주의 손에 있나이다 우리 하나님이여 이제 우리가 주께 감사하오며 주의 영화로운 이름을 찬양하나이다" },
+  { pack: "DEP5 - 교제", ref: "엡 2:13", heading: "교제의 기초", title: "그리스도의 보혈", body: "이제는 전에 멀리 있던 너희가 그리스도 예수 안에서 그리스도의 피로 가까워졌느니라" },
+  { pack: "DEP6 - 증거", ref: "행 1:8", heading: "전도는 누구의 책임인가?", title: "모든 그리스도인", body: "오직 성령이 너희에게 임하시면 너희가 권능을 받고 예루살렘과 온 유대와 사마리아와 땅 끝까지 이르러 내 증인이 되리라 하시니라" },
+  { pack: "DEP6 - 증거", ref: "롬 10:14", heading: "왜 전도를 해야 하나?", title: "전파해야 믿게 되므로", body: "그런즉 저희가 믿지 아니하는 이를 어찌 부르리요 듣지도 못한 이를 어찌 믿으리요 전파하는 자가 없이 어찌 들으리요" },
+  { pack: "DEP7 - 그리스도의 주재권", ref: "대상 28:9", heading: "주재권을 인정할 때의 축복", title: "함께해 주심", body: "내 아들 솔로몬아 너는 네 아비의 하나님을 알고 온전한 마음과 기쁜 뜻으로 섬길지어다 여호와께서는 뭇 마음을 감찰하사 모든 사상을 아시나니 네가 저를 찾으면 만날 것이요 버리면 저가 너를 영원히 버리시리라" },
+  { pack: "DEP8 - 세계비전", ref: "창 12:2,3", heading: "", title: "세계를 위한 하나님의 관심과 약속", body: "내가 너로 큰 민족을 이루고 네게 복을 주어 네 이름을 창대케 하리니 너는 복의 근원이 될찌라 너를 축복하는 자에게는 내가 복을 내리고 너를 저주하는 자에게는 내가 저주하리니 땅의 모든 족속이 너를 인하여 복을 얻을 것이니라 하신지라" },
+];
+
+// BEGIN-COMPARE
+/* ---------- Sound-alike comparison ----------
+   Both texts are split into Hangul letters (jamo), ignoring spaces and
+   punctuation, then aligned with LCS twice:
+     exact: spelling must match            -> "ok"
+     sound: spelling variants that sound   -> "near"
+            the same are treated as equal
+   e.g. 될찌라 / 될지라, 아무 것도 / 아무것도.                       */
+const CHO = ["ㄱ","ㄲ","ㄴ","ㄷ","ㄸ","ㄹ","ㅁ","ㅂ","ㅃ","ㅅ","ㅆ","ㅇ","ㅈ","ㅉ","ㅊ","ㅋ","ㅌ","ㅍ","ㅎ"];
+const JUNG = ["ㅏ","ㅐ","ㅑ","ㅒ","ㅓ","ㅔ","ㅕ","ㅖ","ㅗ","ㅘ","ㅙ","ㅚ","ㅛ","ㅜ","ㅝ","ㅞ","ㅟ","ㅠ","ㅡ","ㅢ","ㅣ"];
+const JONG = ["","ㄱ","ㄲ","ㄳ","ㄴ","ㄵ","ㄶ","ㄷ","ㄹ","ㄺ","ㄻ","ㄼ","ㄽ","ㄾ","ㄿ","ㅀ","ㅁ","ㅂ","ㅄ","ㅅ","ㅆ","ㅇ","ㅈ","ㅊ","ㅋ","ㅌ","ㅍ","ㅎ"];
+const PLAIN = { "ㄲ":"ㄱ", "ㄸ":"ㄷ", "ㅃ":"ㅂ", "ㅆ":"ㅅ", "ㅉ":"ㅈ" };
+const VOWEL_SOUND = { "ㅔ":"ㅐ", "ㅖ":"ㅒ", "ㅞ":"ㅙ", "ㅚ":"ㅙ" };
+const JONG_SPLIT = { "ㄳ":["ㄱ","ㅅ"], "ㄵ":["ㄴ","ㅈ"], "ㄶ":["ㄴ","ㅎ"], "ㄺ":["ㄹ","ㄱ"], "ㄻ":["ㄹ","ㅁ"], "ㄼ":["ㄹ","ㅂ"], "ㄽ":["ㄹ","ㅅ"], "ㄾ":["ㄹ","ㅌ"], "ㄿ":["ㄹ","ㅍ"], "ㅀ":["ㄹ","ㅎ"], "ㅄ":["ㅂ","ㅅ"] };
+// Spans that should count as one token whatever script the recognizer used
+const ALIASES = [
+  { key: "<QT>", re: /quiet\s*time|콰\s*이\s*(?:어\s*트|엇)\s*타\s*임/iy },
+];
+const LETTER_RE = /[\p{L}\p{N}]/u;
+
+function unitize(text) {
+  const exact = [], sound = [];
+  let i = 0;
+  outer: while (i < text.length) {
+    for (const a of ALIASES) {
+      a.re.lastIndex = i;
+      const m = a.re.exec(text);
+      if (m) {
+        exact.push({ k: a.key, s: i, e: i + m[0].length });
+        sound.push({ k: a.key, s: i, e: i + m[0].length });
+        i += m[0].length;
+        continue outer;
+      }
+    }
+    const ch = text[i];
+    const code = ch.charCodeAt(0);
+    if (code >= 0xAC00 && code <= 0xD7A3) {
+      const n = code - 0xAC00;
+      const L = CHO[Math.floor(n / 588)], V = JUNG[Math.floor((n % 588) / 28)], T = JONG[n % 28];
+      const at = (k) => ({ k, s: i, e: i + 1 });
+      exact.push(at(L), at(V));
+      if (T) exact.push(at(T));
+      if (L !== "ㅇ") sound.push(at(PLAIN[L] || L));       // silent ㅇ: lets 깨끗이 match 깨끄시
+      sound.push(at(VOWEL_SOUND[V] || V));
+      if (T) for (const t of (JONG_SPLIT[T] || [T])) sound.push(at(PLAIN[t] || t));
+    } else if (LETTER_RE.test(ch)) {
+      const k = ch.toLowerCase();
+      exact.push({ k, s: i, e: i + 1 });
+      sound.push({ k, s: i, e: i + 1 });
+    }
+    i++;
+  }
+  return { exact, sound };
+}
+
+// Returns [maskA, maskB]: which units of a and b are part of the LCS
+function lcsMasks(a, b) {
+  const m = a.length, n = b.length, W = n + 1;
+  const dp = new Uint16Array((m + 1) * W);
+  for (let i = 1; i <= m; i++)
+    for (let j = 1; j <= n; j++)
+      dp[i * W + j] = a[i - 1].k === b[j - 1].k
+        ? dp[(i - 1) * W + j - 1] + 1
+        : Math.max(dp[(i - 1) * W + j], dp[i * W + j - 1]);
+  const ma = new Array(m).fill(false), mb = new Array(n).fill(false);
+  let i = m, j = n;
+  while (i > 0 && j > 0) {
+    if (a[i - 1].k === b[j - 1].k) { ma[i - 1] = mb[j - 1] = true; i--; j--; }
+    else if (dp[(i - 1) * W + j] >= dp[i * W + j - 1]) i--;
+    else j--;
+  }
+  return [ma, mb];
+}
+
+// Per-character state: "ok" | "near" | "bad" | null (space/punctuation)
+function charStates(text, exactUnits, exactMask, soundUnits, soundMask) {
+  const ex = new Array(text.length).fill(null), so = new Array(text.length).fill(null);
+  const mark = (arr, units, mask) => units.forEach((u, idx) => {
+    for (let c = u.s; c < u.e; c++) arr[c] = (arr[c] === null ? true : arr[c]) && mask[idx];
+  });
+  mark(ex, exactUnits, exactMask);
+  mark(so, soundUnits, soundMask);
+  return ex.map((v, c) => v === null && so[c] === null ? null : v ? "ok" : so[c] ? "near" : "bad");
+}
+
+function compareSpoken(heard, target) {
+  const H = unitize(heard), G = unitize(target);
+  const [hEx, gEx] = lcsMasks(H.exact, G.exact);
+  const [hSo, gSo] = lcsMasks(H.sound, G.sound);
+  const targetStates = charStates(target, G.exact, gEx, G.sound, gSo);
+  const heardStates = charStates(heard, H.exact, hEx, H.sound, hSo);
+  const count = (s) => targetStates.filter(x => x === s).length;
+  const ok = count("ok"), near = count("near"), bad = count("bad");
+  return { targetStates, heardStates, ok, near, bad, total: ok + near + bad, extra: heardStates.filter(x => x === "bad").length };
+}
+// END-COMPARE
+
+/* ---------- Page ---------- */
+const $ = (id) => document.getElementById(id);
+const store = {
+  get(k, d) { try { const v = localStorage.getItem(k); return v === null ? d : JSON.parse(v); } catch { return d; } },
+  set(k, v) { try { localStorage.setItem(k, JSON.stringify(v)); } catch {} },
+};
+const targetText = (v) => [v.heading, v.title, v.body].filter(Boolean).join(" ");
+
+let idx = Math.min(store.get("speak-test-idx", 0), VERSES.length - 1);
+let attempts = store.get("speak-test-attempts", []);
+
+VERSES.forEach((v, i) => {
+  const o = document.createElement("option");
+  o.value = i; o.textContent = `${v.pack} · ${v.ref}`;
+  $("pick").appendChild(o);
+});
+$("showVerse").checked = store.get("speak-test-show", true);
+
+function renderVerse() {
+  const v = VERSES[idx];
+  $("pick").value = idx;
+  $("pack").textContent = v.pack;
+  $("ref").textContent = v.ref;
+  const t = $("target");
+  if ($("showVerse").checked || !$("resultCard").hidden) { t.textContent = targetText(v); t.className = "verse"; }
+  else { t.textContent = "(hidden: say it from memory)"; t.className = "verse hidden-verse"; }
+}
+
+function colored(el, text, states) {
+  el.textContent = "";
+  let cur = null, buf = "";
+  const flush = () => {
+    if (!buf) return;
+    if (cur) { const s = document.createElement("span"); s.className = cur; s.textContent = buf; el.appendChild(s); }
+    else el.appendChild(document.createTextNode(buf));
+    buf = "";
+  };
+  for (let i = 0; i < text.length; i++) {
+    const st = states[i];
+    if (st !== cur) { flush(); cur = st; }
+    buf += text[i];
+  }
+  flush();
+}
+
+function showResult(heard) {
+  const v = VERSES[idx], target = targetText(v);
+  const r = compareSpoken(heard, target);
+  $("resultCard").hidden = false;
+  renderVerse();
+  const pct = (n) => r.total ? Math.round(100 * n / r.total) : 0;
+  $("score").textContent = `${pct(r.ok + r.near)}% matched`;
+  $("score").title = `same ${r.ok}, sounds same ${r.near}, missed ${r.bad}, extra ${r.extra}`;
+  colored($("targetColored"), target, r.targetStates);
+  colored($("heardColored"), heard, r.heardStates);
+  return r;
+}
+
+function clearResult() {
+  $("resultCard").hidden = true;
+  $("live").textContent = "";
+  $("transcript").value = "";
+  $("raw").textContent = "";
+  $("error").textContent = "";
+}
+
+function go(i) {
+  if (listening) stopListening();
+  idx = (i + VERSES.length) % VERSES.length;
+  store.set("speak-test-idx", idx);
+  clearResult();
+  renderVerse();
+}
+$("prev").onclick = () => go(idx - 1);
+$("next").onclick = () => go(idx + 1);
+$("pick").onchange = (e) => go(+e.target.value);
+$("showVerse").onchange = () => { store.set("speak-test-show", $("showVerse").checked); renderVerse(); };
+$("transcript").oninput = () => showResult($("transcript").value);
+
+/* ---------- Speech recognition ---------- */
+const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+if (!SR) {
+  $("support").textContent = "This browser has no speech recognition. Try Chrome (Android/desktop) or Safari (iPhone).";
+  $("mic").disabled = true;
+}
+
+let rec = null, listening = false, wantListening = false;
+let committed = "", sessionFinal = "", sessionPieces = [], allPieces = [], restarts = 0, startedAt = 0, fatal = false;
+const FATAL = ["not-allowed", "service-not-allowed", "audio-capture", "network", "language-not-supported"];
+
+// Android Chrome sometimes repeats earlier text in later final results
+function mergePiece(acc, t) {
+  t = t.trim();
+  if (!acc) return t;
+  if (t.startsWith(acc)) return t;
+  return acc + " " + t;
+}
+
+function renderLive(interim) {
+  const live = $("live");
+  live.textContent = [committed, sessionFinal].filter(Boolean).join(" ");
+  if (interim) {
+    const s = document.createElement("span");
+    s.className = "interim"; s.textContent = " " + interim;
+    live.appendChild(s);
+  }
+}
+
+function startSession() {
+  rec = new SR();
+  rec.lang = "ko-KR";
+  rec.continuous = $("continuous").checked;
+  rec.interimResults = true;
+  rec.maxAlternatives = 3;
+  rec.onresult = (e) => {
+    let fin = "", interim = "";
+    const pieces = [];
+    for (let i = 0; i < e.results.length; i++) {
+      const res = e.results[i];
+      if (res.isFinal) {
+        fin = mergePiece(fin, res[0].transcript);
+        const alts = [];
+        for (let a = 1; a < res.length; a++) alts.push(res[a].transcript);
+        pieces.push({ text: res[0].transcript, confidence: Math.round((res[0].confidence || 0) * 100) / 100, alts });
+      } else interim += res[0].transcript;
+    }
+    sessionFinal = fin; sessionPieces = pieces;
+    renderLive(interim);
+  };
+  rec.onerror = (e) => {
+    if (e.error === "no-speech" || e.error === "aborted") return;
+    $("error").textContent = `Recognizer error: ${e.error}${e.error === "not-allowed" ? " (microphone permission denied)" : ""}`;
+    if (FATAL.includes(e.error)) fatal = true;
+  };
+  rec.onend = () => {
+    committed = [committed, sessionFinal].filter(Boolean).join(" ");
+    allPieces.push(...sessionPieces);
+    sessionFinal = ""; sessionPieces = [];
+    if (wantListening && !fatal && $("autoRestart").checked && restarts < 30) {
+      restarts++;
+      try { startSession(); return; } catch (err) { $("error").textContent = String(err); }
+    }
+    finishListening();
+  };
+  rec.start();
+}
+
+function startListening() {
+  clearResult();
+  committed = ""; sessionFinal = ""; sessionPieces = []; allPieces = []; restarts = 0; fatal = false;
+  wantListening = true; listening = true; startedAt = Date.now();
+  $("mic").classList.add("on");
+  $("mic").textContent = "■ Stop";
+  try { startSession(); } catch (err) { $("error").textContent = String(err); finishListening(); }
+}
+
+function stopListening() {
+  wantListening = false;
+  if (rec) try { rec.stop(); } catch {}
+}
+
+function finishListening() {
+  if (!listening) return;
+  listening = false; wantListening = false;
+  $("mic").classList.remove("on");
+  $("mic").textContent = "🎤 Start speaking";
+  renderLive("");
+  const heard = committed;
+  $("transcript").value = heard;
+  $("raw").textContent = JSON.stringify({ pieces: allPieces, restarts }, null, 1);
+  if (!heard) return;
+  const r = showResult(heard);
+  const v = VERSES[idx];
+  attempts.push({
+    at: new Date().toISOString(), ref: v.ref, seconds: Math.round((Date.now() - startedAt) / 1000),
+    score: r.total ? Math.round(100 * (r.ok + r.near) / r.total) : 0, ok: r.ok, near: r.near, missed: r.bad, extra: r.extra,
+    continuous: $("continuous").checked, autoRestart: $("autoRestart").checked, restarts,
+    target: targetText(v), heard, pieces: allPieces,
+  });
+  store.set("speak-test-attempts", attempts);
+  renderAttempts();
+}
+
+$("mic").onclick = () => (listening ? stopListening() : startListening());
+
+/* ---------- Attempts log ---------- */
+function renderAttempts() { $("attemptCount").textContent = `(${attempts.length})`; }
+
+function attemptsText() {
+  const lines = [`Speaking test results · ${navigator.userAgent}`];
+  for (const a of attempts) {
+    lines.push("", `[${a.ref}] ${a.score}% (same ${a.ok}, sounds same ${a.near}, missed ${a.missed}, extra ${a.extra}) · ${a.seconds}s · continuous=${a.continuous} autoRestart=${a.autoRestart} restarts=${a.restarts}`,
+      `VERSE: ${a.target}`, `HEARD: ${a.heard}`);
+    a.pieces.forEach((p, i) => lines.push(`  piece ${i + 1} (${p.confidence}): ${p.text}${p.alts.length ? "  | alts: " + p.alts.join(" / ") : ""}`));
+  }
+  return lines.join("\n");
+}
+
+$("copy").onclick = async () => {
+  const text = attemptsText();
+  try {
+    await navigator.clipboard.writeText(text);
+    $("copy").textContent = "Copied ✓";
+    setTimeout(() => ($("copy").textContent = "Copy results"), 1500);
+  } catch {
+    const ta = $("copyFallback");
+    ta.hidden = false; ta.value = text; ta.select();
+  }
+};
+$("clear").onclick = () => {
+  if (!confirm("Delete all saved attempts on this device?")) return;
+  attempts = []; store.set("speak-test-attempts", attempts); renderAttempts();
+};
+
+renderVerse();
+renderAttempts();
+</script>
+</body>
+</html>
