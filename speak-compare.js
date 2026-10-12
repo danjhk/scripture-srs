@@ -7,6 +7,9 @@
      sound  - spellings that sound the same count as equal  -> "near" (yellow)
    Anything else in the verse is "bad" (red).
 
+   With { lang: "pt" } the texts are Portuguese: one unit per letter, the
+   sound pass ignores accents, and digits (verse numbers) are not scored.
+
    Works in the browser (window.SpeakCompare) and in Node (require).
 ====================================================================== */
 (function (root, factory) {
@@ -148,6 +151,17 @@
     return units;
   }
 
+  // Portuguese: one unit per letter; digits are verse numbers, not spoken
+  function latinUnits(text, mode) {
+    const units = [];
+    for (let i = 0; i < text.length; i++) {
+      if (!/\p{L}/u.test(text[i])) continue;
+      const k = text[i].toLowerCase();
+      units.push({ k: mode === "sound" ? k.normalize("NFD")[0] : k, s: i, e: i + 1 });   // você = voce
+    }
+    return units;
+  }
+
   function same(a, b, mode) {
     if (a === b) return true;
     if (mode !== "sound") return false;
@@ -199,10 +213,11 @@
     };
   }
 
-  function compare(heard, target) {
+  function compare(heard, target, opts) {
     heard = heard || "";
-    const H = { exact: unitize(heard, "exact"), sound: unitize(heard, "sound") };
-    const G = { exact: unitize(target, "exact"), sound: unitize(target, "sound") };
+    const units = opts && opts.lang === "pt" ? latinUnits : unitize;
+    const H = { exact: units(heard, "exact"), sound: units(heard, "sound") };
+    const G = { exact: units(target, "exact"), sound: units(target, "sound") };
     const [hEx, gEx] = lcsMasks(H.exact, G.exact, "exact");
     const [hSo, gSo] = lcsMasks(H.sound, G.sound, "sound");
     return summarize(
@@ -220,5 +235,20 @@
     return summarize(targetStates, result.heardStates);
   }
 
-  return { compare, acceptWord };
+  // A card's text is "[title] verse" or "[heading] - [title] verse"; the title is
+  // said too, without its brackets
+  function cardParts(cardText) {
+    let text = String(cardText || "").normalize("NFC").trim();
+    const titles = [];
+    let m;
+    while ((m = /^\[([^\]]*)\]\s*(?:-\s*(?=\[))?/.exec(text))) {
+      titles.push(m[1].trim());
+      text = text.slice(m[0].length);
+    }
+    const title = titles.join(" - ");
+    text = text.replace(/\s*\(Vers[aã]o [^)]*\)$/i, "");   // a note such as (Versão NAA) is not said
+    return { title, text };
+  }
+
+  return { compare, acceptWord, cardParts };
 });

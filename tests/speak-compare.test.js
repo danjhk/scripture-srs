@@ -1,7 +1,7 @@
 // Run with: node --test tests/*.test.js
 const test = require("node:test");
 const assert = require("node:assert/strict");
-const { compare, acceptWord } = require("../speak-compare.js");
+const { compare, acceptWord, cardParts } = require("../speak-compare.js");
 
 // Collect the target characters with a given state, joined per word: "될[찌]라" -> ["찌"]
 function charsWith(result, target, state) {
@@ -14,8 +14,8 @@ function charsWith(result, target, state) {
   return out;
 }
 
-function assertNear(heard, target, expectedNear) {
-  const r = compare(heard, target);
+function assertNear(heard, target, expectedNear, opts) {
+  const r = compare(heard, target, opts);
   assert.deepEqual(charsWith(r, target, "bad"), [], `nothing should be red for ${heard} vs ${target}`);
   assert.deepEqual(charsWith(r, target, "near"), expectedNear);
 }
@@ -158,4 +158,64 @@ test("the 33 attempts from the iPhone test average at least 97%", () => {
   const attempts = require("./fixtures/speak-test-2026-10-12.json");
   const avg = attempts.reduce((sum, a) => sum + compare(a.heard, a.target).score, 0) / attempts.length;
   assert.ok(avg >= 97, `average was ${avg.toFixed(1)}%`);
+});
+
+/* ---------- Portuguese (Speak mode in the main app) ---------- */
+const PT = { lang: "pt" };
+
+test("Portuguese: case and punctuation are ignored", () => {
+  const r = compare("é bom que o homem suporte o jugo", "É bom que o homem suporte o jugo.", PT);
+  assert.equal(r.score, 100);
+  assert.equal(r.near, 0);
+});
+
+test("Portuguese: a letter that differs only by its accent sounds alike", () => {
+  assertNear("e bom que", "É bom que", ["É"], PT);
+  assertNear("o meu coracao", "o meu coração", ["çã"], PT);
+  assertNear("voce é", "você é", ["ê"], PT);
+});
+
+test("Portuguese: verse numbers inside the text are not spoken or scored", () => {
+  const target = "em seu coração. 17 Tudo o que fizerem";
+  const r = compare("em seu coração tudo o que fizerem", target, PT);
+  assert.equal(r.score, 100);
+  assert.equal(r.targetStates[target.indexOf("17")], null);
+  assert.equal(r.targetStates[target.indexOf("17") + 1], null);
+});
+
+test("Portuguese: a different word is still red", () => {
+  const target = "É bom que o homem suporte o jugo";
+  const r = compare("é bom que o home suporte o fogo", target, PT);
+  assert.deepEqual(charsWith(r, target, "bad"), ["m", "ju"]);
+});
+
+test("cardParts splits a [title] from the verse", () => {
+  assert.deepEqual(cardParts("[Vontade de Deus] É bom que o homem suporte o jugo"),
+    { title: "Vontade de Deus", text: "É bom que o homem suporte o jugo" });
+  assert.deepEqual(cardParts("[Teachable (Ensinável)] Venham a mim"),
+    { title: "Teachable (Ensinável)", text: "Venham a mim" });
+});
+
+test("cardParts says every leading [bracket] in order", () => {
+  // Some packs store "[heading] - [title] verse"; a " - " inside one bracket is kept
+  assert.deepEqual(cardParts("[Why do we have Quiet Time?] - [God's command] Busquem o SENHOR"),
+    { title: "Why do we have Quiet Time? - God's command", text: "Busquem o SENHOR" });
+  assert.deepEqual(cardParts("[Por que? - Mandamento de Deus] Tudo o que tem vida"),
+    { title: "Por que? - Mandamento de Deus", text: "Tudo o que tem vida" });
+});
+
+test("cardParts leaves a verse without a title as it is", () => {
+  assert.deepEqual(cardParts("Paulo, Silvano e Timóteo, à igreja dos tessalonicenses"),
+    { title: "", text: "Paulo, Silvano e Timóteo, à igreja dos tessalonicenses" });
+});
+
+test("cardParts drops a trailing Bible version note", () => {
+  assert.equal(cardParts("[Paz] e uma esperança. (Versao NAA)").text, "e uma esperança.");
+  assert.equal(cardParts("[Sabedoria de Deus] com integridade. (Versão NAA)").text, "com integridade.");
+});
+
+test("cardParts writes accented letters as single characters", () => {
+  // "e" + combining acute -> "é", so each letter is one character to colour
+  assert.equal(cardParts("[Fe\u0301] fe\u0301").text, "fé");
+  assert.equal(cardParts("[Fe\u0301] fe\u0301").title, "Fé");
 });
