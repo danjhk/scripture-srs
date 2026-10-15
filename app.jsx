@@ -587,8 +587,14 @@ function App() {
   // Speak mode: only when signed in; grading waits until the verse was spoken
   const signedIn = useSignedIn();
   const [speakHeard, setSpeakHeard] = useState(false);
-  const [speakPrefs, setSpeakPrefs] = useState(loadSpeakPrefs);
-  useEffect(() => { saveSpeakPrefs(speakPrefs); }, [speakPrefs]);
+  const [speakPrefs, setSpeakPrefs] = useState(() => loadViewPrefs(SPEAK_PREFS_KEY));
+  useEffect(() => { saveViewPrefs(SPEAK_PREFS_KEY, speakPrefs); }, [speakPrefs]);
+  // Review and Speak: Due list or Whole pack
+  const [reviewPrefs, setReviewPrefs] = useState(() => loadViewPrefs(REVIEW_PREFS_KEY));
+  useEffect(() => { saveViewPrefs(REVIEW_PREFS_KEY, reviewPrefs); }, [reviewPrefs]);
+  const hasViews = settings.mode === "review" || settings.mode === "speak";
+  const viewPrefs = settings.mode === "speak" ? speakPrefs : reviewPrefs;
+  const setViewPrefs = settings.mode === "speak" ? setSpeakPrefs : setReviewPrefs;
 
   // Sync status
   const [sync, setSync] = useState(() => (window.srsSync ?? { pushing:false, pulling:false, lastPullAt:null, lastPushAt:null }));
@@ -727,10 +733,10 @@ function App() {
   }, [cards, filterPack, settings.mode, daily, dailyReviewed, todayCaps]); // (deps ok if you like)
 
 
-  // Read mode and Speak's whole-pack view: the whole selected pack in pack order
-  const speakWhole = settings.mode === "speak" && speakPrefs.view === "pack";
+  // Read mode and the Whole pack view of Review/Speak: the whole selected pack in pack order
+  const wholePack = hasViews && viewPrefs.view === "pack";
   const packCards = useMemo(() => {
-    if ((settings.mode !== "read" && !speakWhole) || filterPack === "ALL") return [];
+    if ((settings.mode !== "read" && !wholePack) || filterPack === "ALL") return [];
     return cards
       .filter((c) => c.pack === filterPack)
       .sort((a, b) => {
@@ -738,15 +744,15 @@ function App() {
         if (ao !== bo) return ao - bo;
         return String(a.ref || "").localeCompare(String(b.ref || ""));
       });
-  }, [cards, filterPack, settings.mode, speakWhole]);
+  }, [cards, filterPack, settings.mode, wholePack]);
 
-  // Speak whole-pack view: the place in each pack is remembered on this device
-  const speakPos = speakWhole ? Math.max(0, packCards.findIndex((c) => c.id === speakPrefs.at?.[filterPack])) : 0;
-  function speakGo(delta) {
+  // Whole pack view: the place in each pack is remembered on this device
+  const packPos = wholePack ? Math.max(0, packCards.findIndex((c) => c.id === viewPrefs.at?.[filterPack])) : 0;
+  function packGo(delta) {
     const n = packCards.length;
     if (!n) return;
-    const next = packCards[(speakPos + delta + n) % n];
-    setSpeakPrefs((p) => ({ ...p, at: { ...p.at, [filterPack]: next.id } }));
+    const next = packCards[(packPos + delta + n) % n];
+    setViewPrefs((p) => ({ ...p, at: { ...p.at, [filterPack]: next.id } }));
   }
 
   // Current card source:
@@ -756,7 +762,7 @@ function App() {
   const currentCard = useMemo(() => {
     if (settings.mode === "read") return null;
     if (settings.mode === "speak" && !signedIn) return null;
-    if (speakWhole) return packCards[speakPos] || null;
+    if (wholePack) return packCards[packPos] || null;
     // Test mode uses its own queue, not sessionQueue
     if (settings.mode === "test") {
       if (!test.active || test.queue.length === 0) return null;
@@ -770,7 +776,7 @@ function App() {
     }
     if (settings.mode === "writing") return null; // require Start Session / manual
     return dueCards[0];
-  }, [sessionQueue, cards, dueCards, settings.mode, test.active, test.queue, signedIn, speakWhole, packCards, speakPos]);
+  }, [sessionQueue, cards, dueCards, settings.mode, test.active, test.queue, signedIn, wholePack, packCards, packPos]);
 
   // Keyboard shortcuts (DISABLE in writing mode) — moved below currentCard
   useEffect(() => {
@@ -999,10 +1005,8 @@ function App() {
 
     popQueueIfHeadIs(currentCard.id);
     if (settings.mode === "writing") setWritingSubmitted(false);
-    if (settings.mode === "speak") {
-      setSpeakHeard(false);
-      if (speakWhole) speakGo(1);
-    }
+    if (settings.mode === "speak") setSpeakHeard(false);
+    if (wholePack) packGo(1);
   }
 
   // NEW: delete selected cards (server attempt + local removal, with confirmation)
@@ -1151,8 +1155,8 @@ function App() {
             <div className="text-sm text-gray-600 min-w-0">
               {settings.mode === "test"
                 ? <>Test: left {test.queue.length} · done {test.total - test.queue.length} / {test.total} | {sessionElapsedMin}m</>
-                : settings.mode === "read" || speakWhole
-                ? <>{speakWhole ? "Speak" : "Read"}: {filterPack === "ALL" ? "choose a pack" : `${packCards.length} verse${packCards.length === 1 ? "" : "s"}`}</>
+                : settings.mode === "read" || wholePack
+                ? <>{settings.mode === "speak" ? "Speak" : settings.mode === "review" ? "Review" : "Read"}: {filterPack === "ALL" ? "choose a pack" : `${packCards.length} verse${packCards.length === 1 ? "" : "s"}`}</>
                 : <>Due: {dueCards.length} | Done: {completed} | {sessionElapsedMin}m</>}
             </div>
             {/* Sync chip (unchanged) */}
@@ -1241,13 +1245,13 @@ function App() {
         {/* Session Controls */}
         {settings.mode !== "read" && (
           <section className="rounded-2xl shadow p-4 bg-white flex flex-wrap items-center justify-between gap-2">
-            {settings.mode === "speak" && (
+            {hasViews && (
               <div className="flex rounded-xl bg-gray-100 p-1 text-sm">
                 {[["due", "Due"], ["pack", "Whole pack"]].map(([v, label]) => (
                   <button
                     key={v}
-                    className={`px-3 py-1 rounded-lg ${speakPrefs.view === v ? "bg-white shadow font-medium" : "text-gray-600"}`}
-                    onClick={() => { setSpeakPrefs((p) => ({ ...p, view: v })); setSessionQueue([]); setCompleted(0); }}
+                    className={`px-3 py-1 rounded-lg ${viewPrefs.view === v ? "bg-white shadow font-medium" : "text-gray-600"}`}
+                    onClick={() => { setViewPrefs((p) => ({ ...p, view: v })); setSessionQueue([]); setCompleted(0); }}
                   >
                     {label}
                   </button>
@@ -1257,11 +1261,11 @@ function App() {
             <div className="text-sm text-gray-600">
               {settings.mode === "writing"
                 ? "Writing session uses random order over the pack."
-                : speakWhole
+                : wholePack
                 ? (filterPack === "ALL" ? "Whole pack: choose a pack" : `Whole pack: ${packCards.length} verse${packCards.length === 1 ? "" : "s"}`)
                 : `Cards due now: ${dueCards.length}`}
             </div>
-            {!speakWhole && (
+            {!wholePack && (
             <div className="flex gap-2">
               <button
                 className="px-4 py-2 rounded-xl bg-indigo-600 text-white"
@@ -1302,11 +1306,11 @@ function App() {
             <ReadPackView pack={filterPack} cards={packCards} />
           ) : settings.mode === "speak" && !signedIn ? (
             <div className="text-center text-gray-500">{signedIn === null ? "Checking sign-in…" : "Sign in to use Speak mode."}</div>
-          ) : speakWhole && filterPack === "ALL" ? (
+          ) : wholePack && filterPack === "ALL" ? (
             <div className="text-center text-gray-500">Choose a pack in 'Filter Pack' to go through all of its verses.</div>
           ) : !currentCard ? (
             <div className="text-center text-gray-500">
-              {speakWhole
+              {wholePack
                 ? "No verses in this pack."
                 : settings.mode === "writing"
                 ? "Start a writing session (randomized) or choose verses from 'View Verses' → 'Write selected now'."
@@ -1323,11 +1327,11 @@ function App() {
                     Pack: {currentCard.pack}
                     {" · "}
                     {currentCard?.order ? `${ordinal(currentCard.order)} Verse` : "Verse"}
-                    {settings.mode === "speak"
+                    {hasViews
                       ? <> · {lastReviewedText(currentCard)}</>
                       : settings.mode !== "test" && <> · {getActiveBucket(currentCard, settings.mode)}</>}
                   </div>
-                  {speakWhole && <div>{speakPos + 1} / {packCards.length}</div>}
+                  {wholePack && <div>{packPos + 1} / {packCards.length}</div>}
                 </div>
               ) : (
                 <div className="flex items-center justify-between text-xs text-gray-600">
@@ -1377,6 +1381,13 @@ function App() {
                 </div>
               )}
 
+              {settings.mode === "review" && wholePack && (
+                <div className="grid grid-cols-2 gap-2">
+                  <button className="px-3 py-2 rounded-xl bg-gray-200" onClick={() => packGo(-1)}>◀ Prev</button>
+                  <button className="px-3 py-2 rounded-xl bg-indigo-600 text-white" onClick={() => packGo(1)}>Next ▶</button>
+                </div>
+              )}
+
               {settings.mode === "test" && (
                 <div className="rounded-2xl border p-4 bg-gray-50 flex justify-center">
                   <div className="text-base whitespace-pre-wrap break-words font-mono w-[25ch]">
@@ -1392,8 +1403,8 @@ function App() {
                   showVerse={!!speakPrefs.showVerse}
                   onShowVerse={(on) => setSpeakPrefs((p) => ({ ...p, showVerse: on }))}
                   onHeard={setSpeakHeard}
-                  onPrev={speakWhole ? () => speakGo(-1) : null}
-                  onNext={speakWhole ? () => speakGo(1) : null}
+                  onPrev={wholePack ? () => packGo(-1) : null}
+                  onNext={wholePack ? () => packGo(1) : null}
                 />
               )}
 
@@ -1586,6 +1597,7 @@ function App() {
           onStartManual={(ids) => {
             if (!ids?.length) return;
             if (settings.mode === "read" || settings.mode === "speak") setSettings(s => ({ ...s, mode: "review" }));
+            setReviewPrefs((p) => (p.view === "due" ? p : { ...p, view: "due" }));
             setSessionQueue(ids);
             setCompleted(0);
             setSessionStart(now());
@@ -2112,14 +2124,15 @@ function useSignedIn() {
   return signedIn;
 }
 
-// Per device: Due or Whole pack, the place in each pack, Show verse
+// Per device, separately for Review and Speak: Due or Whole pack, the place in each pack (and Speak's Show verse)
 const SPEAK_PREFS_KEY = "speak-practice";
-function loadSpeakPrefs() {
+const REVIEW_PREFS_KEY = "review-practice";
+function loadViewPrefs(key) {
   const d = { view: "due", at: {}, showVerse: false };
-  try { return { ...d, ...(JSON.parse(localStorage.getItem(SPEAK_PREFS_KEY)) || {}) }; } catch { return d; }
+  try { return { ...d, ...(JSON.parse(localStorage.getItem(key)) || {}) }; } catch { return d; }
 }
-function saveSpeakPrefs(prefs) {
-  try { localStorage.setItem(SPEAK_PREFS_KEY, JSON.stringify(prefs)); } catch {}
+function saveViewPrefs(key, prefs) {
+  try { localStorage.setItem(key, JSON.stringify(prefs)); } catch {}
 }
 
 // "Last: 7D · 5 days ago" from the Slow schedule
