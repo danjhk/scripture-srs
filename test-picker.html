@@ -1,0 +1,460 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<meta name="robots" content="noindex" />
+<title>Verse Test Picker</title>
+<script src="https://unpkg.com/@supabase/supabase-js@2.45.4/dist/umd/supabase.js"></script>
+<style>
+  :root {
+    --bg: #f8fafc; --card: #ffffff; --text: #111827; --muted: #6b7280; --border: #e5e7eb;
+    --accent: #4f46e5; --accent-text: #ffffff; --sel: #eef2ff; --err: #dc2626;
+    --gold: #b45309; --gold-bg: #fffbeb; --gold-line: #f59e0b; --gold-star: #f59e0b;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #0f172a; --card: #1e293b; --text: #f1f5f9; --muted: #94a3b8; --border: #334155;
+      --accent: #6366f1; --accent-text: #ffffff; --sel: #262a4d; --err: #ef4444;
+      --gold: #fcd34d; --gold-bg: #3a2a0a; --gold-line: #f59e0b; --gold-star: #fbbf24;
+    }
+  }
+  * { box-sizing: border-box; }
+  [hidden] { display: none !important; }
+  html, body { margin: 0; max-width: 100%; overflow-x: hidden; }
+  body { background: var(--bg); color: var(--text); font: 16px/1.5 system-ui, -apple-system, sans-serif; overflow-wrap: anywhere; }
+  main { max-width: 720px; margin: 0 auto; padding: 16px; }
+  h1 { font-size: 20px; margin: 0; }
+  a { color: var(--accent); }
+  .muted { color: var(--muted); font-size: 13px; }
+  .card { background: var(--card); border: 1px solid var(--border); border-radius: 14px; padding: 14px; margin-top: 12px; }
+  .row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+  .spread { justify-content: space-between; }
+  input, button { font: inherit; color: var(--text); }
+  button { padding: 6px 12px; border-radius: 10px; border: 1px solid var(--border); background: var(--card); cursor: pointer; }
+  button.small { padding: 2px 10px; font-size: 13px; }
+  input[type=search] { flex: 1; min-width: 0; padding: 8px 10px; border-radius: 10px; border: 1px solid var(--border); background: var(--card); }
+  input[type=checkbox] { width: 20px; height: 20px; accent-color: var(--accent); margin: 0; }
+  label.switch { font-size: 14px; display: flex; gap: 6px; align-items: center; }
+  .err { color: var(--err); }
+  .counts { font-size: 14px; }
+  .counts b { font-size: 16px; }
+
+  /* Final test verses: the special selection */
+  #final { background: var(--gold-bg); border: 2px solid var(--gold-line); }
+  #final h2 { margin: 0; font-size: 18px; color: var(--gold); }
+  #finalList { list-style: none; margin: 8px 0 0; padding: 0; }
+  #finalList li { border-top: 1px solid var(--gold-line); padding: 6px 0; }
+  #finalList li:first-child { border-top: 0; }
+  .final-head { display: grid; grid-template-columns: 2.2em 1fr auto; gap: 6px; align-items: center; }
+  .final-no { font-weight: 700; color: var(--gold); text-align: right; }
+
+  /* Packs */
+  details { border-top: 1px solid var(--border); }
+  details:first-child { border-top: 0; }
+  summary { list-style: none; cursor: pointer; padding: 10px 2px; display: flex; gap: 8px; align-items: center; }
+  summary .label { flex: 1; min-width: 0; display: flex; flex-wrap: wrap; align-items: baseline; gap: 0 8px; }
+  summary .btns { display: flex; gap: 4px; flex-shrink: 0; }
+  summary::-webkit-details-marker { display: none; }
+  summary::before { content: "▸"; color: var(--muted); width: 1em; }
+  details[open] > summary::before { content: "▾"; }
+  .group > summary .name { font-size: 18px; font-weight: 700; }
+  .pack > summary .name { font-weight: 600; }
+  .group-body { padding-left: 14px; }
+  .pack-body { padding: 0 0 8px 0; }
+  .badge { font-size: 13px; color: var(--muted); }
+  .badge.gold { color: var(--gold); font-weight: 600; }
+
+  /* Verses */
+  .verse-row { display: grid; grid-template-columns: 32px 1fr 40px; align-items: center; border-radius: 10px; padding: 2px 4px; margin-top: 2px; }
+  .verse-row.memorized { background: var(--sel); }
+  .verse-row.final { background: var(--gold-bg); box-shadow: inset 4px 0 0 var(--gold-line); }
+  .ref-btn { border: 0; background: none; text-align: left; padding: 8px 4px; font-weight: 600; }
+  .ref-btn .no { color: var(--muted); font-weight: 400; font-size: 13px; margin-right: 6px; }
+  .ref-btn .from { display: block; color: var(--muted); font-weight: 400; font-size: 12px; }
+  .star { border: 0; background: none; font-size: 22px; line-height: 1; padding: 6px; color: var(--muted); }
+  .star.on { color: var(--gold-star); }
+  .content { grid-column: 1 / -1; padding: 4px 8px 10px 36px; }
+  .content .title { font-weight: 700; color: var(--muted); font-size: 15px; }
+  .content .text { font-size: 17px; line-height: 1.7; margin-top: 2px; }
+  footer { margin: 24px 0 8px; text-align: center; }
+</style>
+</head>
+<body>
+<main>
+  <div class="row spread">
+    <h1>Verse Test Picker</h1>
+    <a class="muted" href="./">Back to the app</a>
+  </div>
+  <div id="status" class="muted" style="margin-top:4px">Loading verses…</div>
+
+  <div class="card">
+    <div class="counts row spread">
+      <span>Memorized: <b id="memCount">0</b></span>
+      <span style="color:var(--gold)">★ Final: <b id="finalCount">0</b></span>
+    </div>
+    <div class="muted" style="margin-top:6px">Check ☑ the verses that were memorized. Tap ☆ to add a verse to the final test. Tap a reference to see the verse.</div>
+    <div class="row" style="margin-top:10px">
+      <input type="search" id="search" placeholder="Search reference or words" aria-label="Search" />
+    </div>
+    <div class="row" style="margin-top:8px">
+      <label class="switch"><input type="checkbox" id="onlyMem" /> Show only memorized</label>
+    </div>
+  </div>
+
+  <section class="card" id="final">
+    <div class="row spread">
+      <h2>★ Final test verses (<span id="finalCount2">0</span>)</h2>
+      <button class="small" id="clearFinal">Clear final</button>
+    </div>
+    <div class="muted" id="finalEmpty" style="margin-top:6px">Tap ☆ next to a verse to add it here.</div>
+    <ol id="finalList"></ol>
+  </section>
+
+  <section class="card" id="packs"></section>
+
+  <footer>
+    <button id="clearAll">Clear all selections</button>
+  </footer>
+</main>
+
+<script>
+(() => {
+  "use strict";
+  const SUPABASE_URL = "https://wfqbfapvwrulfzblskws.supabase.co";
+  const SUPABASE_ANON = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6IndmcWJmYXB2d3J1bGZ6Ymxza3dzIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NTg0NTkxMTUsImV4cCI6MjA3NDAzNTExNX0.lzLU2X3sY6seixhUyJqQu4jaw84CmtQnsLl328fPB9o";
+  const APP_STATE_KEY = "scripture_srs_v1";   // the app's copy on this device
+  const PICKS_KEY = "test-picker";             // this page's selections on this device
+  const PACK_RENAMES = {                       // same as app.jsx
+    "Filipenses_formatted_prefixed.txt": "27 - Filipenses.txt",
+    "Colossenses_prefixed.txt": "28 - Colossenses.txt",
+    "1_Tessalonicenses_formatted_prefixed.txt": "29 - 1 Tessalonicenses.txt",
+  };
+  // Packs 03-10 and 11-21 are shown together; the rest stand alone
+  const GROUPS = [
+    { name: "DEP242", from: 3, to: 10 },
+    { name: "Series180", from: 11, to: 21 },
+  ];
+
+  const $ = (id) => document.getElementById(id);
+  const el = (tag, cls, text) => {
+    const e = document.createElement(tag);
+    if (cls) e.className = cls;
+    if (text != null) e.textContent = text;
+    return e;
+  };
+
+  // ---------- Selections (kept on this device) ----------
+  let memorized = new Set(), finals = [];
+  try {
+    const p = JSON.parse(localStorage.getItem(PICKS_KEY)) || {};
+    memorized = new Set(p.memorized || []);
+    finals = Array.isArray(p.final) ? p.final : [];
+  } catch {}
+  function savePicks() {
+    try { localStorage.setItem(PICKS_KEY, JSON.stringify({ memorized: [...memorized], final: finals })); } catch {}
+  }
+
+  // ---------- Verses ----------
+  let cards = [], byId = new Map();
+
+  // "03 - AOS - P.txt" -> { num: 3, name: "AOS" }
+  function packInfo(pack) {
+    const m = /^(\d+)\s*-\s*(.*)$/.exec(pack);
+    const name = (m ? m[2] : pack).replace(/\s*-\s*P\.txt$/i, "").replace(/\.txt$/i, "").trim();
+    return { num: m ? Number(m[1]) : null, name: name || pack };
+  }
+  // "[Title] - [Sub] text" -> { title: "Title — Sub", text }
+  function verseParts(text) {
+    const s = String(text || "");
+    const m = /^\s*((?:\[[^\]]*\]\s*(?:-\s*)?)+)/.exec(s);
+    if (!m) return { title: "", text: s.trim() };
+    const title = [...m[1].matchAll(/\[([^\]]*)\]/g)].map((x) => x[1].trim()).filter(Boolean).join(" — ");
+    return { title, text: s.slice(m[0].length).trim() };
+  }
+  const fold = (s) => String(s || "").normalize("NFD").replace(/\p{M}/gu, "").toLowerCase();
+
+  function setCards(list) {
+    cards = list
+      .filter((c) => c && c.id && c.ref != null)
+      .map((c) => {
+        const pack = PACK_RENAMES[c.pack] || c.pack || "";
+        const info = packInfo(pack);
+        return { id: c.id, ref: String(c.ref), text: String(c.text || ""), pack, packNum: info.num, packName: info.name,
+                 order: c.order ?? null, search: fold(`${c.ref} ${c.text}`) };
+      });
+    byId = new Map(cards.map((c) => [c.id, c]));
+    render();
+  }
+
+  function fromAppCopy() {
+    try { return (JSON.parse(localStorage.getItem(APP_STATE_KEY)) || {}).cards || []; } catch { return []; }
+  }
+
+  async function fromAccount() {
+    if (!window.supabase) return null;
+    const client = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON,
+      { auth: { persistSession: true, detectSessionInUrl: false }, realtime: { enabled: false } });
+    const { data } = await client.auth.getSession();
+    const uid = data?.session?.user?.id;
+    if (!uid) return null;
+    const rows = [];
+    for (let from = 0; ; from += 1000) {
+      const { data: page, error } = await client.from("cards")
+        .select("id, ref, text, pack, order_in_pack, deleted_at")
+        .eq("user_id", uid).order("id", { ascending: true }).range(from, from + 999);
+      if (error) throw error;
+      rows.push(...(page || []));
+      if (!page || page.length < 1000) break;
+    }
+    return rows.filter((r) => !r.deleted_at)
+      .map((r) => ({ id: r.id, ref: r.ref, text: r.text, pack: r.pack, order: r.order_in_pack }));
+  }
+
+  async function load() {
+    const local = fromAppCopy();
+    if (local.length) setCards(local);
+    let account = null, failed = false;
+    try { account = await fromAccount(); } catch (e) { console.warn("account load failed", e); failed = true; }
+    if (account && account.length) {
+      setCards(account);
+      status(`From your account · ${account.length} verses`);
+    } else if (local.length) {
+      status(failed
+        ? `Couldn't reach your account, so this shows the copy saved on this device · ${local.length} verses`
+        : `Not signed in, so this shows the copy saved on this device · ${local.length} verses. Sign in on the app to load your account.`);
+    } else {
+      status(failed ? "Couldn't load your verses. Check the internet connection and reload." : "No verses yet. Open the app and sign in first, then come back to this page.", true);
+    }
+  }
+  function status(msg, isErr) { const s = $("status"); s.textContent = msg; s.className = isErr ? "err" : "muted"; }
+
+  // ---------- Layout: groups and packs ----------
+  const rows = new Map();          // id -> verse row element(s)
+  const packEls = [];              // { el, ids, countEl, finalEl }
+  const openState = {};            // keeps groups/packs open across re-renders
+
+  function sortCards(list) {
+    return list.slice().sort((a, b) => {
+      const ao = a.order ?? Infinity, bo = b.order ?? Infinity;
+      if (ao !== bo) return ao - bo;
+      return a.ref.localeCompare(b.ref);
+    });
+  }
+
+  function render() {
+    const root = $("packs");
+    root.textContent = "";
+    rows.clear(); packEls.length = 0;
+    if (!cards.length) { root.hidden = true; updateCounts(); renderFinal(); return; }
+    root.hidden = false;
+
+    // packs, in pack number order
+    const packs = new Map();
+    for (const c of cards) {
+      if (!packs.has(c.pack)) packs.set(c.pack, { pack: c.pack, num: c.packNum, name: c.packName, cards: [] });
+      packs.get(c.pack).cards.push(c);
+    }
+    const packList = [...packs.values()].sort((a, b) =>
+      (a.num ?? Infinity) - (b.num ?? Infinity) || a.name.localeCompare(b.name));
+
+    // top level: a group once (at its first pack) or a single pack
+    const placed = new Set();
+    for (const p of packList) {
+      const g = GROUPS.find((g) => p.num != null && p.num >= g.from && p.num <= g.to);
+      if (!g) { root.append(packDetails(p)); continue; }
+      if (placed.has(g.name)) continue;
+      placed.add(g.name);
+      const members = packList.filter((q) => q.num != null && q.num >= g.from && q.num <= g.to);
+      root.append(groupDetails(g.name, members));
+    }
+    applyFilter();
+    updateCounts();
+    renderFinal();
+  }
+
+  function selectButtons(getIds) {
+    const all = el("button", "small", "All"), none = el("button", "small", "None");
+    all.title = "Mark all as memorized"; none.title = "Unmark all";
+    all.onclick = (e) => { e.preventDefault(); e.stopPropagation(); getIds().forEach((id) => memorized.add(id)); changed(); };
+    none.onclick = (e) => {
+      e.preventDefault(); e.stopPropagation();
+      const ids = new Set(getIds());
+      ids.forEach((id) => memorized.delete(id));
+      finals = finals.filter((id) => !ids.has(id));
+      changed();
+    };
+    return [all, none];
+  }
+
+  // Name and counts on the left, All / None on the right
+  function summaryRow(name, ids) {
+    const s = el("summary"), label = el("span", "label"), btns = el("span", "btns");
+    const count = el("span", "badge"), fin = el("span", "badge gold");
+    label.append(el("span", "name", name), count, fin);
+    btns.append(...selectButtons(() => ids));
+    s.append(label, btns);
+    packEls.push({ ids, countEl: count, finalEl: fin });
+    return s;
+  }
+
+  function groupDetails(name, members) {
+    const d = el("details", "group");
+    const key = `g:${name}`;
+    d.open = !!openState[key];
+    d.ontoggle = () => { openState[key] = d.open; };
+    const ids = members.flatMap((p) => p.cards.map((c) => c.id));
+    const s = summaryRow(name, ids);
+    const body = el("div", "group-body");
+    members.forEach((p) => body.append(packDetails(p)));
+    d.append(s, body);
+    d.dataset.group = name;
+    return d;
+  }
+
+  function packDetails(p) {
+    const d = el("details", "pack");
+    const key = `p:${p.pack}`;
+    d.open = !!openState[key];
+    d.ontoggle = () => { openState[key] = d.open; };
+    const sorted = sortCards(p.cards);
+    const ids = sorted.map((c) => c.id);
+    const s = summaryRow(p.name, ids);
+    const body = el("div", "pack-body");
+    sorted.forEach((c, i) => body.append(verseRow(c, c.order ?? i + 1)));
+    d.append(s, body);
+    return d;
+  }
+
+  function verseRow(c, no) {
+    const r = el("div", "verse-row");
+    r.dataset.id = c.id;
+    const box = el("input"); box.type = "checkbox"; box.setAttribute("aria-label", `Memorized: ${c.ref}`);
+    box.onchange = () => toggleMemorized(c.id, box.checked);
+    const ref = el("button", "ref-btn");
+    ref.append(el("span", "no", String(no)), document.createTextNode(c.ref));
+    ref.setAttribute("aria-expanded", "false");
+    ref.onclick = () => toggleContent(r, ref, c);
+    const star = el("button", "star");
+    star.onclick = () => toggleFinal(c.id);
+    r.append(box, ref, star);
+    if (!rows.has(c.id)) rows.set(c.id, []);
+    rows.get(c.id).push({ r, box, star });
+    paintRow(c.id);
+    return r;
+  }
+
+  function toggleContent(row, btn, c) {
+    let box = row.querySelector(".content");
+    if (box) { box.remove(); btn.setAttribute("aria-expanded", "false"); return; }
+    box = el("div", "content");
+    const { title, text } = verseParts(c.text);
+    if (title) box.append(el("div", "title", title));
+    box.append(el("div", "text", text));
+    row.append(box);
+    btn.setAttribute("aria-expanded", "true");
+  }
+
+  // ---------- Selecting ----------
+  function toggleMemorized(id, on) {
+    if (on) memorized.add(id);
+    else { memorized.delete(id); finals = finals.filter((x) => x !== id); }
+    changed();
+  }
+  function toggleFinal(id) {
+    if (finals.includes(id)) finals = finals.filter((x) => x !== id);
+    else { finals.push(id); memorized.add(id); }   // a final verse is also a memorized one
+    changed();
+  }
+  function changed() {
+    savePicks();
+    rows.forEach((_, id) => paintRow(id));
+    applyFilter();
+    updateCounts();
+    renderFinal();
+  }
+  function paintRow(id) {
+    const mem = memorized.has(id), fin = finals.includes(id);
+    for (const { r, box, star } of rows.get(id) || []) {
+      r.classList.toggle("memorized", mem && !fin);
+      r.classList.toggle("final", fin);
+      box.checked = mem;
+      star.textContent = fin ? "★" : "☆";
+      star.classList.toggle("on", fin);
+      star.setAttribute("aria-label", fin ? "Remove from final test" : "Add to final test");
+      star.title = star.getAttribute("aria-label");
+    }
+  }
+
+  function updateCounts() {
+    const known = (id) => byId.has(id);
+    $("memCount").textContent = [...memorized].filter(known).length;
+    const nFinal = finals.filter(known).length;
+    $("finalCount").textContent = nFinal;
+    $("finalCount2").textContent = nFinal;
+    for (const p of packEls) {
+      const m = p.ids.filter((id) => memorized.has(id)).length;
+      const f = p.ids.filter((id) => finals.includes(id)).length;
+      p.countEl.textContent = `${m} / ${p.ids.length}`;
+      p.finalEl.textContent = f ? `★ ${f}` : "";
+    }
+  }
+
+  // ---------- Final test list ----------
+  function renderFinal() {
+    const list = $("finalList");
+    list.textContent = "";
+    const ids = finals.filter((id) => byId.has(id));
+    $("finalEmpty").hidden = ids.length > 0;
+    $("clearFinal").hidden = ids.length === 0;
+    ids.forEach((id, i) => {
+      const c = byId.get(id);
+      const li = el("li");
+      const head = el("div", "final-head");
+      const ref = el("button", "ref-btn");
+      ref.append(document.createTextNode(c.ref), el("span", "from", c.packName));
+      ref.setAttribute("aria-expanded", "false");
+      ref.onclick = () => toggleContent(li, ref, c);
+      const x = el("button", "small", "✕");
+      x.setAttribute("aria-label", `Remove ${c.ref} from final test`);
+      x.onclick = () => toggleFinal(id);
+      head.append(el("span", "final-no", `${i + 1}.`), ref, x);
+      li.append(head);
+      list.append(li);
+    });
+  }
+
+  // ---------- Search and "only memorized" ----------
+  function applyFilter() {
+    const q = fold($("search").value.trim());
+    const only = $("onlyMem").checked;
+    const filtering = !!q || only;
+    for (const [id, list] of rows) {
+      const c = byId.get(id);
+      const show = (!q || c.search.includes(q)) && (!only || memorized.has(id));
+      list.forEach(({ r }) => { r.hidden = !show; });
+    }
+    // hide empty packs/groups while filtering, and open the ones with matches
+    for (const d of $("packs").querySelectorAll("details")) {
+      const any = [...d.querySelectorAll(".verse-row")].some((r) => !r.hidden);
+      d.hidden = filtering && !any;
+      if (filtering && any) d.open = true;
+    }
+  }
+  $("search").addEventListener("input", applyFilter);
+  $("onlyMem").addEventListener("change", applyFilter);
+
+  $("clearFinal").onclick = () => {
+    if (!confirm("Remove all verses from the final test?")) return;
+    finals = []; changed();
+  };
+  $("clearAll").onclick = () => {
+    if (!confirm("Clear all memorized and final selections on this device?")) return;
+    memorized = new Set(); finals = []; changed();
+  };
+
+  load();
+})();
+</script>
+</body>
+</html>
