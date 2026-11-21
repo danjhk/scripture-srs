@@ -219,6 +219,7 @@ function upgradeSettings(settings) {
   }
   if (s.mode === "full") s.mode = "review";
   if (s.mode === "bulk") s.mode = "review"; // 1 Tessalonicenses mode was removed
+  if (s.mode === "speak") s.mode = "review"; // Speak (Portuguese) mode was removed
   // ensure writing options exist
   if (!s.writing) s.writing = defaultWritingOptions();
   return s;
@@ -547,7 +548,7 @@ function diffCharsLCS(typedRaw, targetRaw, opts = defaultWritingOptions()) {
 function defaultSettings() {
   return {
     sessionTarget: 50,
-    mode: "recognition",            // "recognition" | "review" | "writing" | "test" | "read" | "speak"
+    mode: "recognition",            // "recognition" | "review" | "writing" | "test" | "read"
     showFirstNWords: 6,
     shuffle: false,
     dailyCapSlow: 60,
@@ -584,17 +585,9 @@ function App() {
   // NEW: writing state: whether current card has been submitted
   const [writingSubmitted, setWritingSubmitted] = useState(false);
 
-  // Speak mode: only when signed in; grading waits until the verse was spoken
-  const signedIn = useSignedIn();
-  const [speakHeard, setSpeakHeard] = useState(false);
-  const [speakPrefs, setSpeakPrefs] = useState(() => loadViewPrefs(SPEAK_PREFS_KEY));
-  useEffect(() => { saveViewPrefs(SPEAK_PREFS_KEY, speakPrefs); }, [speakPrefs]);
-  // Review and Speak: Due list or Whole pack
-  const [reviewPrefs, setReviewPrefs] = useState(() => loadViewPrefs(REVIEW_PREFS_KEY));
-  useEffect(() => { saveViewPrefs(REVIEW_PREFS_KEY, reviewPrefs); }, [reviewPrefs]);
-  const hasViews = settings.mode === "review" || settings.mode === "speak";
-  const viewPrefs = settings.mode === "speak" ? speakPrefs : reviewPrefs;
-  const setViewPrefs = settings.mode === "speak" ? setSpeakPrefs : setReviewPrefs;
+  // Review: Due list or Whole pack
+  const [reviewPrefs, setReviewPrefs] = useState(loadReviewPrefs);
+  useEffect(() => { saveReviewPrefs(reviewPrefs); }, [reviewPrefs]);
 
   // Sync status
   const [sync, setSync] = useState(() => (window.srsSync ?? { pushing:false, pulling:false, lastPullAt:null, lastPushAt:null }));
@@ -686,10 +679,6 @@ function App() {
 
 
   const packs = useMemo(() => ["ALL", ...Array.from(new Set(cards.map((c) => c.pack))).sort()], [cards]);
-  const filterPacks = settings.mode === "speak" ? packs.filter((p) => p === "ALL" || isSpeakPack(p)) : packs;
-  useEffect(() => {
-    if (settings.mode === "speak" && filterPack !== "ALL" && !isSpeakPack(filterPack)) setFilterPack("ALL");
-  }, [settings.mode, filterPack]);
 
   // History counts for header (MUST be above dueCards)
   const dailyReviewed = useMemo(() => {
@@ -716,11 +705,10 @@ function App() {
     const key = settings.mode === "recognition" ? "fast" : "slow";
     let list = cards.filter((c) => (c?.srs?.[key]?.nextDue ?? 0) <= t);
     if (filterPack !== "ALL") list = list.filter((c) => c.pack === filterPack);
-    if (settings.mode === "speak") list = list.filter((c) => isSpeakPack(c.pack));
     list.sort((a, b) => {
       if (filterPack === "ALL" && a.pack !== b.pack) {
         const packOrder = String(a.pack).localeCompare(String(b.pack));
-        return settings.mode === "review" || settings.mode === "speak" ? -packOrder : packOrder;
+        return settings.mode === "review" ? -packOrder : packOrder;
       }
       const ao = a.order ?? Number.POSITIVE_INFINITY, bo = b.order ?? Number.POSITIVE_INFINITY;
       if (ao !== bo) return ao - bo;
@@ -733,8 +721,8 @@ function App() {
   }, [cards, filterPack, settings.mode, daily, dailyReviewed, todayCaps]); // (deps ok if you like)
 
 
-  // Read mode and the Whole pack view of Review/Speak: the whole selected pack in pack order
-  const wholePack = hasViews && viewPrefs.view === "pack";
+  // Read mode and Review's Whole pack view: the whole selected pack in pack order
+  const wholePack = settings.mode === "review" && reviewPrefs.view === "pack";
   const packCards = useMemo(() => {
     if ((settings.mode !== "read" && !wholePack) || filterPack === "ALL") return [];
     return cards
@@ -747,12 +735,12 @@ function App() {
   }, [cards, filterPack, settings.mode, wholePack]);
 
   // Whole pack view: the place in each pack is remembered on this device
-  const packPos = wholePack ? Math.max(0, packCards.findIndex((c) => c.id === viewPrefs.at?.[filterPack])) : 0;
+  const packPos = wholePack ? Math.max(0, packCards.findIndex((c) => c.id === reviewPrefs.at?.[filterPack])) : 0;
   function packGo(delta) {
     const n = packCards.length;
     if (!n) return;
     const next = packCards[(packPos + delta + n) % n];
-    setViewPrefs((p) => ({ ...p, at: { ...p.at, [filterPack]: next.id } }));
+    setReviewPrefs((p) => ({ ...p, at: { ...p.at, [filterPack]: next.id } }));
   }
 
   // Current card source:
@@ -761,7 +749,6 @@ function App() {
   // - Others: from sessionQueue if present else dueCards[0]
   const currentCard = useMemo(() => {
     if (settings.mode === "read") return null;
-    if (settings.mode === "speak" && !signedIn) return null;
     if (wholePack) return packCards[packPos] || null;
     // Test mode uses its own queue, not sessionQueue
     if (settings.mode === "test") {
@@ -776,7 +763,7 @@ function App() {
     }
     if (settings.mode === "writing") return null; // require Start Session / manual
     return dueCards[0];
-  }, [sessionQueue, cards, dueCards, settings.mode, test.active, test.queue, signedIn, wholePack, packCards, packPos]);
+  }, [sessionQueue, cards, dueCards, settings.mode, test.active, test.queue, wholePack, packCards, packPos]);
 
   // Keyboard shortcuts (DISABLE in writing mode) — moved below currentCard
   useEffect(() => {
@@ -797,8 +784,6 @@ function App() {
 
       // Writing: disable SRS shortcuts
       if (settings.mode === "writing") return;
-      // Speak: grade only after the verse was spoken
-      if (settings.mode === "speak" && !speakHeard) return;
 
       // Recognition/Review shortcuts
       const lbl = SHORTCUT_MAP[e.key.toLowerCase?.() || e.key];
@@ -808,10 +793,10 @@ function App() {
     }
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [currentCard, settings.mode, test.active, test.queue, speakHeard]);
+  }, [currentCard, settings.mode, test.active, test.queue]);
 
   // Reset "submitted" when card/mode changes
-  useEffect(() => { setWritingSubmitted(false); setSpeakHeard(false); }, [settings.mode, currentCard?.id]);
+  useEffect(() => { setWritingSubmitted(false); }, [settings.mode, currentCard?.id]);
 
   function dailyRemaining(mode) {
     const goal = mode === "recognition" ? todayCaps.fast : todayCaps.slow;
@@ -1005,7 +990,6 @@ function App() {
 
     popQueueIfHeadIs(currentCard.id);
     if (settings.mode === "writing") setWritingSubmitted(false);
-    if (settings.mode === "speak") setSpeakHeard(false);
     if (wholePack) packGo(1);
   }
 
@@ -1143,7 +1127,7 @@ function App() {
   const sessionElapsedMin = sessionStart ? Math.round((now() - sessionStart) / 6000) / 10 : 0;
 
   // Helpers for UI conditions
-  const showGradeButtons = !(settings.mode === "writing" && !writingSubmitted) && !(settings.mode === "speak" && !speakHeard);
+  const showGradeButtons = !(settings.mode === "writing" && !writingSubmitted);
 
   return (
     <div className="min-h-screen bg-gray-50 p-4 pb-28 sm:pb-4">
@@ -1156,7 +1140,7 @@ function App() {
               {settings.mode === "test"
                 ? <>Test: left {test.queue.length} · done {test.total - test.queue.length} / {test.total} | {sessionElapsedMin}m</>
                 : settings.mode === "read" || wholePack
-                ? <>{settings.mode === "speak" ? "Speak" : settings.mode === "review" ? "Review" : "Read"}: {filterPack === "ALL" ? "choose a pack" : `${packCards.length} verse${packCards.length === 1 ? "" : "s"}`}</>
+                ? <>{wholePack ? "Review" : "Read"}: {filterPack === "ALL" ? "choose a pack" : `${packCards.length} verse${packCards.length === 1 ? "" : "s"}`}</>
                 : <>Due: {dueCards.length} | Done: {completed} | {sessionElapsedMin}m</>}
             </div>
             {/* Sync chip (unchanged) */}
@@ -1212,13 +1196,12 @@ function App() {
               <option value="writing">Writing (slow)</option>
               <option value="test">Test (random, 2-button)</option>
               <option value="read">Read (whole pack)</option>
-              {(signedIn || settings.mode === "speak") && <option value="speak">Speak (Portuguese)</option>}
             </select>
           </div>
           <div>
             <label className="block text-sm font-medium">Filter Pack</label>
             <select className="mt-1 w-full border rounded-xl p-2" value={filterPack} onChange={(e) => setFilterPack(e.target.value)}>
-              {filterPacks.map((p) => (<option key={p} value={p}>{p}</option>))}
+              {packs.map((p) => (<option key={p} value={p}>{p}</option>))}
             </select>
           </div>
           <div>
@@ -1245,13 +1228,13 @@ function App() {
         {/* Session Controls */}
         {settings.mode !== "read" && (
           <section className="rounded-2xl shadow p-4 bg-white flex flex-wrap items-center justify-between gap-2">
-            {hasViews && (
+            {settings.mode === "review" && (
               <div className="flex rounded-xl bg-gray-100 p-1 text-sm">
                 {[["due", "Due"], ["pack", "Whole pack"]].map(([v, label]) => (
                   <button
                     key={v}
-                    className={`px-3 py-1 rounded-lg ${viewPrefs.view === v ? "bg-white shadow font-medium" : "text-gray-600"}`}
-                    onClick={() => { setViewPrefs((p) => ({ ...p, view: v })); setSessionQueue([]); setCompleted(0); }}
+                    className={`px-3 py-1 rounded-lg ${reviewPrefs.view === v ? "bg-white shadow font-medium" : "text-gray-600"}`}
+                    onClick={() => { setReviewPrefs((p) => ({ ...p, view: v })); setSessionQueue([]); setCompleted(0); }}
                   >
                     {label}
                   </button>
@@ -1304,8 +1287,6 @@ function App() {
 
           {settings.mode === "read" ? (
             <ReadPackView pack={filterPack} cards={packCards} />
-          ) : settings.mode === "speak" && !signedIn ? (
-            <div className="text-center text-gray-500">{signedIn === null ? "Checking sign-in…" : "Sign in to use Speak mode."}</div>
           ) : wholePack && filterPack === "ALL" ? (
             <div className="text-center text-gray-500">Choose a pack in 'Filter Pack' to go through all of its verses.</div>
           ) : !currentCard ? (
@@ -1327,7 +1308,7 @@ function App() {
                     Pack: {currentCard.pack}
                     {" · "}
                     {currentCard?.order ? `${ordinal(currentCard.order)} Verse` : "Verse"}
-                    {hasViews
+                    {settings.mode === "review"
                       ? <> · {lastReviewedText(currentCard)}</>
                       : settings.mode !== "test" && <> · {getActiveBucket(currentCard, settings.mode)}</>}
                   </div>
@@ -1344,8 +1325,7 @@ function App() {
                 </div>
               )}
 
-              {/* Title / prompt area (Speak shows its own) */}
-              {settings.mode !== "speak" && (
+              {/* Title / prompt area */}
               <div className="text-lg font-semibold">
                 {settings.mode === "recognition" ? (
                   <CardFrontRecognition card={currentCard} words={settings.showFirstNWords} />
@@ -1355,7 +1335,6 @@ function App() {
                   <div className="text-gray-700 text-sm">{currentCard.ref}</div>
                 )}
               </div>
-              )}
 
               {/* Keyboard shortcuts note (hide for writing) */}
               {settings.mode !== "writing" && (
@@ -1394,18 +1373,6 @@ function App() {
                     {currentCard.text}
                   </div>
                 </div>
-              )}
-
-              {settings.mode === "speak" && (
-                <SpeakCard
-                  key={`${currentCard.id}:${completed}`}
-                  card={currentCard}
-                  showVerse={!!speakPrefs.showVerse}
-                  onShowVerse={(on) => setSpeakPrefs((p) => ({ ...p, showVerse: on }))}
-                  onHeard={setSpeakHeard}
-                  onPrev={wholePack ? () => packGo(-1) : null}
-                  onNext={wholePack ? () => packGo(1) : null}
-                />
               )}
 
               {/* NEW: Writing box + feedback */}
@@ -1596,7 +1563,7 @@ function App() {
           onChangeScheduleKey={setViewScheduleKey}
           onStartManual={(ids) => {
             if (!ids?.length) return;
-            if (settings.mode === "read" || settings.mode === "speak") setSettings(s => ({ ...s, mode: "review" }));
+            if (settings.mode === "read") setSettings(s => ({ ...s, mode: "review" }));
             setReviewPrefs((p) => (p.view === "due" ? p : { ...p, view: "due" }));
             setSessionQueue(ids);
             setCompleted(0);
@@ -2099,40 +2066,16 @@ function ReadPackView({ pack, cards }) {
 }
 
 /* =========================
-   Speak mode: say a verse from the Portuguese packs (22–29), see which words
-   matched, then grade it on the Slow schedule. Only shown when signed in.
-   The checker (speak-compare.js) is shared with krv.html.
+   Review's Whole pack view
 ========================= */
-function isSpeakPack(pack) {
-  const n = parseInt(String(pack), 10);
-  return n >= 22 && n <= 29;
-}
-
-// true / false once the Supabase session is known (read locally, so it works offline); null before
-function useSignedIn() {
-  const [signedIn, setSignedIn] = useState(null);
-  useEffect(() => {
-    let sub = null, timer = null, tries = 0;
-    function attach() {
-      const client = window.supabaseClient;
-      if (!client) { if (++tries < 240) timer = setTimeout(attach, 250); return; }
-      sub = client.auth.onAuthStateChange((_event, session) => setSignedIn(!!session?.user)).data.subscription;
-    }
-    attach();
-    return () => { clearTimeout(timer); sub?.unsubscribe(); };
-  }, []);
-  return signedIn;
-}
-
-// Per device, separately for Review and Speak: Due or Whole pack, the place in each pack (and Speak's Show verse)
-const SPEAK_PREFS_KEY = "speak-practice";
+// Per device: Due or Whole pack, and the place in each pack
 const REVIEW_PREFS_KEY = "review-practice";
-function loadViewPrefs(key) {
-  const d = { view: "due", at: {}, showVerse: false };
-  try { return { ...d, ...(JSON.parse(localStorage.getItem(key)) || {}) }; } catch { return d; }
+function loadReviewPrefs() {
+  const d = { view: "due", at: {} };
+  try { return { ...d, ...(JSON.parse(localStorage.getItem(REVIEW_PREFS_KEY)) || {}) }; } catch { return d; }
 }
-function saveViewPrefs(key, prefs) {
-  try { localStorage.setItem(key, JSON.stringify(prefs)); } catch {}
+function saveReviewPrefs(prefs) {
+  try { localStorage.setItem(REVIEW_PREFS_KEY, JSON.stringify(prefs)); } catch {}
 }
 
 // "Last: 7D · 5 days ago" from the Slow schedule
@@ -2142,224 +2085,6 @@ function lastReviewedText(card) {
   const d = daysSince(sub.updatedAt);
   const when = d === null ? "" : d <= 0 ? " · today" : d === 1 ? " · 1 day ago" : ` · ${d} days ago`;
   return `Last: ${sub.bucket || "0D"}${when}`;
-}
-
-const SPEECH_ERRORS = {
-  "not-allowed": "Microphone access is needed. Allow the microphone in your browser settings.",
-  "service-not-allowed": "Speech recognition isn't available in this browser.",
-  "audio-capture": "No microphone was found.",
-  "network": "Check your internet connection.",
-  "language-not-supported": "This browser can't recognize Portuguese.",
-};
-
-// Listens until stop() and then reports the whole transcript once (same as krv.html).
-// iPhone and Android stop after a pause, so the session restarts until the user taps Stop.
-function createListener({ lang, onLive, onDone, onError }) {
-  const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
-  let rec = null, want = false, discard = false, fatal = false, restarts = 0;
-  let committed = "", sessionFinal = "";
-  const join = (...parts) => parts.filter(Boolean).join(" ");
-  // Android Chrome can repeat earlier text at the start of a later final result
-  const mergePiece = (acc, t) => { t = t.trim(); if (!acc) return t; return t.startsWith(acc) ? t : acc + " " + t; };
-
-  function startSession() {
-    rec = new SR();
-    rec.lang = lang;
-    rec.continuous = true;
-    rec.interimResults = true;
-    rec.onresult = (e) => {
-      let fin = "", interim = "";
-      for (let i = 0; i < e.results.length; i++) {
-        const res = e.results[i];
-        if (res.isFinal) fin = mergePiece(fin, res[0].transcript);
-        else interim += res[0].transcript;
-      }
-      sessionFinal = fin;
-      onLive(join(committed, sessionFinal), interim);
-    };
-    rec.onerror = (e) => {
-      if (SPEECH_ERRORS[e.error]) { fatal = true; onError(SPEECH_ERRORS[e.error]); }
-    };
-    rec.onend = () => {
-      committed = join(committed, sessionFinal);
-      sessionFinal = "";
-      if (want && !fatal && restarts < 30) {
-        restarts++;
-        try { startSession(); return; } catch (err) { onError(String(err)); }
-      }
-      want = false;
-      if (!discard) onDone(committed, fatal);
-    };
-    rec.start();
-  }
-
-  return {
-    start() {
-      committed = ""; sessionFinal = ""; restarts = 0; fatal = false; discard = false; want = true;
-      try { startSession(); } catch (err) { want = false; onError(String(err)); onDone("", true); }
-    },
-    stop(discardResult) {
-      want = false;
-      discard = !!discardResult;
-      if (rec) try { rec.stop(); } catch {}
-    },
-  };
-}
-
-const SPEAK_COLORS = { ok: "bg-emerald-200 text-emerald-900", near: "bg-amber-200 text-amber-900", bad: "bg-rose-200 text-rose-900" };
-
-// Letters coloured by their state; one span per word so a red word can be tapped
-function ColoredText({ text, states, offset = 0, onBadWord }) {
-  const out = [];
-  let at = offset;
-  text.split(/(\s+)/).forEach((w, wi) => {
-    if (!w) return;
-    if (/^\s+$/.test(w)) { out.push(w); at += w.length; return; }
-    const runs = [];
-    let hasBad = false;
-    for (let i = 0; i < w.length; i++) {
-      const st = states ? states[at + i] : null;
-      if (st === "bad") hasBad = true;
-      if (runs.length && runs[runs.length - 1].st === st) runs[runs.length - 1].s += w[i];
-      else runs.push({ st, s: w[i] });
-    }
-    const start = at;
-    const tappable = hasBad && onBadWord;
-    out.push(
-      <span key={wi} className={tappable ? "cursor-pointer" : undefined} onClick={tappable ? () => onBadWord(start) : undefined}>
-        {runs.map((r, ri) => <span key={ri} className={r.st ? SPEAK_COLORS[r.st] : undefined}>{r.s}</span>)}
-      </span>
-    );
-    at += w.length;
-  });
-  return <>{out}</>;
-}
-
-function SpeakCard({ card, showVerse, onShowVerse, onHeard, onPrev, onNext }) {
-  // "[title] verse": the title is said first, without brackets
-  const parts = useMemo(() => SpeakCompare.cardParts(card.text), [card.text]);
-  const target = [parts.title, parts.text].filter(Boolean).join(" ");
-  const textOffset = parts.title ? parts.title.length + 1 : 0;
-  const supported = !!(window.SpeechRecognition || window.webkitSpeechRecognition);
-
-  const [listening, setListening] = useState(false);
-  const [live, setLive] = useState(null);       // { text, interim } while listening
-  const [heard, setHeard] = useState("");
-  const [result, setResult] = useState(null);
-  const [error, setError] = useState("");
-  const [editing, setEditing] = useState(false);
-  const listener = useRef(null);
-
-  useEffect(() => () => listener.current?.stop(true), []);
-  useEffect(() => { onHeard(!!result); }, [result]);
-
-  function check(text) {
-    const t = text.normalize("NFC");
-    setHeard(t);
-    setResult(SpeakCompare.compare(t, target, { lang: "pt" }));
-  }
-  function clear() {
-    listener.current?.stop(true);
-    setListening(false); setLive(null); setHeard(""); setResult(null); setError(""); setEditing(false);
-  }
-  function start() {
-    clear();
-    listener.current = createListener({
-      lang: "pt-BR",
-      onLive: (text, interim) => setLive({ text, interim }),
-      onError: setError,
-      onDone: (text, failed) => {
-        setListening(false); setLive(null);
-        if (text) check(text);
-        else if (!failed) setError("Nothing was heard. Try again.");
-      },
-    });
-    setListening(true);
-    setLive({ text: "", interim: "" });
-    listener.current.start();
-  }
-  const acceptAt = (index) => setResult((r) => SpeakCompare.acceptWord(r, target, index));
-
-  return (
-    <div className="space-y-3">
-      <div className="text-2xl font-bold">{card.ref}</div>
-      <label className="flex items-center gap-2 text-sm">
-        <input type="checkbox" checked={showVerse} onChange={(e) => onShowVerse(e.target.checked)} /> Show verse
-      </label>
-
-      {result || showVerse ? (
-        <div className="break-words">
-          {parts.title && (
-            <div className="font-bold">
-              <ColoredText text={parts.title} states={result?.targetStates} offset={0} onBadWord={result ? acceptAt : null} />
-            </div>
-          )}
-          <div className="text-lg leading-relaxed mt-1">
-            <ColoredText text={parts.text} states={result?.targetStates} offset={textOffset} onBadWord={result ? acceptAt : null} />
-          </div>
-        </div>
-      ) : (
-        <div className="italic text-gray-500">Recite the verse from memory</div>
-      )}
-
-      {!supported && (
-        <div className="text-sm text-rose-600">
-          This browser can't recognize speech. Use Safari on iPhone or Chrome on Android. 'Show verse' still works.
-        </div>
-      )}
-      <button
-        className={`w-full py-4 rounded-2xl text-lg font-semibold text-white ${listening ? "bg-rose-600" : "bg-indigo-600"} disabled:opacity-40`}
-        disabled={!supported}
-        onClick={() => (listening ? listener.current.stop(false) : start())}
-      >
-        {listening ? "■ Stop" : "🎤 Start speaking"}
-      </button>
-      <div className="text-xs text-gray-500 text-center">Tap the button, wait a moment, then speak. Tap it again when you're done.</div>
-      {error && <div className="text-sm text-rose-600">{error}</div>}
-
-      {live && (
-        <div className="rounded-xl border p-3 bg-gray-50 break-words">
-          <div className="text-xs text-gray-500">Listening…</div>
-          <div>{live.text}{live.interim && <span className="text-gray-400"> {live.interim}</span>}</div>
-        </div>
-      )}
-
-      {result && (
-        <div className="rounded-xl border p-3 bg-gray-50 space-y-2 break-words">
-          <div className="flex flex-wrap items-center justify-between gap-2">
-            <div className="text-xl font-bold">Match {result.score}%</div>
-            <div className="flex gap-1 text-xs">
-              <span className={`${SPEAK_COLORS.ok} px-1.5 rounded`}>Correct</span>
-              <span className={`${SPEAK_COLORS.near} px-1.5 rounded`}>Sounds alike</span>
-              <span className={`${SPEAK_COLORS.bad} px-1.5 rounded`}>Wrong</span>
-            </div>
-          </div>
-          <div className="text-xs text-gray-500">Tap a red word to mark it as said correctly.</div>
-          <div className="flex items-center justify-between gap-2">
-            <div className="text-xs text-gray-500">Heard (red = not in the verse)</div>
-            <button className="text-xs px-2 py-1 rounded bg-gray-200" onClick={() => setEditing((e) => !e)}>Edit</button>
-          </div>
-          <div className="leading-relaxed"><ColoredText text={heard} states={result.heardStates} /></div>
-          {editing && (
-            <textarea
-              lang="pt-BR"
-              className="w-full border rounded-xl p-2"
-              rows={4}
-              value={heard}
-              onChange={(e) => check(e.target.value)}
-              autoFocus
-            />
-          )}
-        </div>
-      )}
-
-      <div className={`grid gap-2 ${onPrev ? "grid-cols-3" : "grid-cols-1"}`}>
-        {onPrev && <button className="px-3 py-2 rounded-xl bg-gray-200" onClick={onPrev}>◀ Prev</button>}
-        <button className="px-3 py-2 rounded-xl bg-gray-200" onClick={clear}>Again</button>
-        {onNext && <button className="px-3 py-2 rounded-xl bg-indigo-600 text-white" onClick={onNext}>Next ▶</button>}
-      </div>
-    </div>
-  );
 }
 
 function VersesView({
