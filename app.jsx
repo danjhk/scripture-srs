@@ -700,41 +700,75 @@ function App() {
   }, [capLog]);
 
   // Due list (used by recognition/review): everything due, before Review's bucket tab and the daily goal
+  // Due order: with ALL packs, Review shows the newest pack first; then pack order
+  function byDueOrder(a, b) {
+    if (filterPack === "ALL" && a.pack !== b.pack) {
+      const packOrder = String(a.pack).localeCompare(String(b.pack));
+      return settings.mode === "review" ? -packOrder : packOrder;
+    }
+    const ao = a.order ?? Number.POSITIVE_INFINITY, bo = b.order ?? Number.POSITIVE_INFINITY;
+    if (ao !== bo) return ao - bo;
+    const ar = String(a.ref || ""), br = String(b.ref || "");
+    if (ar !== br) return ar.localeCompare(br);
+    return String(a.id).localeCompare(String(b.id));
+  }
+  const bucketOf = (c) => c?.srs?.slow?.bucket || "0D";
+
   const dueAll = useMemo(() => {
     const t = now();
     const key = settings.mode === "recognition" ? "fast" : "slow";
     let list = cards.filter((c) => (c?.srs?.[key]?.nextDue ?? 0) <= t);
     if (filterPack !== "ALL") list = list.filter((c) => c.pack === filterPack);
-    list.sort((a, b) => {
-      if (filterPack === "ALL" && a.pack !== b.pack) {
-        const packOrder = String(a.pack).localeCompare(String(b.pack));
-        return settings.mode === "review" ? -packOrder : packOrder;
-      }
-      const ao = a.order ?? Number.POSITIVE_INFINITY, bo = b.order ?? Number.POSITIVE_INFINITY;
-      if (ao !== bo) return ao - bo;
-      const ar = String(a.ref || ""), br = String(b.ref || "");
-      if (ar !== br) return ar.localeCompare(br);
-      return String(a.id).localeCompare(String(b.id));
-    });
-    return list;
+    return list.sort(byDueOrder);
   }, [cards, filterPack, settings.mode]);
 
-  // Review's Due view can show one bucket only; the daily goal still limits the list
-  const dueBucket = settings.mode === "review" && DUE_TABS.includes(reviewPrefs.bucket) ? reviewPrefs.bucket : "all";
+  // Review views: Due (due verses), Bucket (every verse in a bucket) or Whole (a whole pack).
+  // Due and Bucket share the bucket tab.
+  const reviewView = settings.mode !== "review" ? null : ["due", "bucket", "pack"].includes(reviewPrefs.view) ? reviewPrefs.view : "due";
+  const dueView = reviewView === "due", bucketView = reviewView === "bucket", wholePack = reviewView === "pack";
+  const reviewTab = reviewView && DUE_TABS.includes(reviewPrefs.bucket) ? reviewPrefs.bucket : "all";
+  const reviewTabName = reviewTab === "all" ? "All" : reviewTab;
+
+  // Due: the daily goal still limits the list
   const dueRemain = Math.max(0, dailyRemaining(settings.mode));
   const dueCards = useMemo(() => {
-    const list = dueBucket === "all" ? dueAll : dueAll.filter((c) => (c?.srs?.slow?.bucket || "0D") === dueBucket);
+    const list = reviewTab === "all" ? dueAll : dueAll.filter((c) => bucketOf(c) === reviewTab);
     return list.slice(0, dueRemain);
-  }, [dueAll, dueBucket, dueRemain]);
+  }, [dueAll, reviewTab, dueRemain]);
   const dueCounts = useMemo(() => {
     const n = { all: dueAll.length };
-    for (const c of dueAll) { const b = c?.srs?.slow?.bucket || "0D"; n[b] = (n[b] || 0) + 1; }
+    for (const c of dueAll) n[bucketOf(c)] = (n[bucketOf(c)] || 0) + 1;
     return n;
   }, [dueAll]);
 
+  // Bucket: every verse in the tab's bucket, due or not. Verses graded from it today stay
+  // in the list, so the position and Prev don't jump when a verse moves to another bucket.
+  const bucketKey = `${filterPack}|${reviewTab}`;
+  const bucketSeen = reviewPrefs.bseen?.day === todayKey() ? reviewPrefs.bseen.ids || {} : {};
+  const cardsById = useMemo(() => new Map(cards.map((c) => [c.id, c])), [cards]);
+  const bucketCards = useMemo(() => {
+    if (!bucketView) return [];
+    const seen = new Set(bucketSeen[bucketKey] || []);
+    return cards
+      .filter((c) => (filterPack === "ALL" || c.pack === filterPack) && (reviewTab === "all" || bucketOf(c) === reviewTab || seen.has(c.id)))
+      .sort(byDueOrder);
+  }, [cards, filterPack, settings.mode, bucketView, reviewTab, reviewPrefs.bseen]);
+  const bucketCounts = useMemo(() => {
+    if (!bucketView) return {};
+    const inPack = (c) => filterPack === "ALL" || c.pack === filterPack;
+    const n = { all: 0 };
+    for (const c of cards) if (inPack(c)) { n.all++; n[bucketOf(c)] = (n[bucketOf(c)] || 0) + 1; }
+    for (const b of DUE_TABS) {
+      if (b === "all") continue;
+      for (const id of bucketSeen[`${filterPack}|${b}`] || []) {
+        const c = cardsById.get(id);
+        if (c && inPack(c) && bucketOf(c) !== b) n[b] = (n[b] || 0) + 1;
+      }
+    }
+    return n;
+  }, [cards, cardsById, filterPack, bucketView, reviewPrefs.bseen]);
 
-  // Read mode and Review's Whole pack view: the whole selected pack in pack order
-  const wholePack = settings.mode === "review" && reviewPrefs.view === "pack";
+  // Read mode and Review's Whole view: the whole selected pack in pack order
   const packCards = useMemo(() => {
     if ((settings.mode !== "read" && !wholePack) || filterPack === "ALL") return [];
     return cards
@@ -747,17 +781,19 @@ function App() {
   }, [cards, filterPack, settings.mode, wholePack]);
 
   // Due view position ("2 / 4"): verses graded today from this list, plus the ones left
-  const dueView = settings.mode === "review" && !wholePack;
-  const dueRunKey = `${filterPack}|${dueBucket}`;
+  const dueRunKey = `${filterPack}|${reviewTab}`;
   const dueDone = (reviewPrefs.runs?.day === todayKey() && reviewPrefs.runs.done?.[dueRunKey]) || 0;
 
-  // Whole pack view: the place in each pack is remembered on this device
-  const packPos = wholePack ? Math.max(0, packCards.findIndex((c) => c.id === reviewPrefs.at?.[filterPack])) : 0;
-  function packGo(delta) {
-    const n = packCards.length;
+  // Whole and Bucket: Prev/Next through the list; the place in each pack or bucket is remembered on this device
+  const navList = wholePack ? packCards : bucketView ? bucketCards : null;
+  const navField = wholePack ? "at" : "bat";
+  const navKey = wholePack ? filterPack : bucketKey;
+  const navPos = navList ? Math.max(0, navList.findIndex((c) => c.id === reviewPrefs[navField]?.[navKey])) : 0;
+  function navGo(delta) {
+    const n = navList?.length;
     if (!n) return;
-    const next = packCards[(packPos + delta + n) % n];
-    setReviewPrefs((p) => ({ ...p, at: { ...p.at, [filterPack]: next.id } }));
+    const next = navList[(navPos + delta + n) % n];
+    setReviewPrefs((p) => ({ ...p, [navField]: { ...p[navField], [navKey]: next.id } }));
   }
 
   // Current card source:
@@ -766,7 +802,7 @@ function App() {
   // - Others: from sessionQueue if present else dueCards[0]
   const currentCard = useMemo(() => {
     if (settings.mode === "read") return null;
-    if (wholePack) return packCards[packPos] || null;
+    if (navList) return navList[navPos] || null;
     // Test mode uses its own queue, not sessionQueue
     if (settings.mode === "test") {
       if (!test.active || test.queue.length === 0) return null;
@@ -780,7 +816,7 @@ function App() {
     }
     if (settings.mode === "writing") return null; // require Start Writing / manual
     return dueCards[0];
-  }, [sessionQueue, cards, dueCards, settings.mode, test.active, test.queue, wholePack, packCards, packPos]);
+  }, [sessionQueue, cards, dueCards, settings.mode, test.active, test.queue, navList, navPos]);
 
   // Keyboard shortcuts (DISABLE in writing mode) — moved below currentCard
   useEffect(() => {
@@ -1005,7 +1041,17 @@ function App() {
 
     popQueueIfHeadIs(currentCard.id);
     if (settings.mode === "writing") setWritingSubmitted(false);
-    if (wholePack) packGo(1);
+    if (navList) navGo(1);
+    if (bucketView) {
+      const id = currentCard.id;
+      setReviewPrefs((p) => {
+        const day = todayKey();
+        const ids = p.bseen?.day === day ? { ...p.bseen.ids } : {};
+        const seen = ids[bucketKey] || [];
+        if (!seen.includes(id)) ids[bucketKey] = [...seen, id];
+        return { ...p, bseen: { day, ids } };
+      });
+    }
     if (fromDueList) {
       setReviewPrefs((p) => {
         const day = todayKey();
@@ -1162,6 +1208,8 @@ function App() {
             <div className="text-sm text-gray-600 min-w-0">
               {settings.mode === "test"
                 ? <>Test: left {test.queue.length} · done {test.total - test.queue.length} / {test.total} | {sessionElapsedMin}m</>
+                : bucketView
+                ? <>Bucket {reviewTabName}: {bucketCards.length} verse{bucketCards.length === 1 ? "" : "s"} | Done: {completed}</>
                 : settings.mode === "read" || wholePack
                 ? <>{wholePack ? "Review" : "Read"}: {filterPack === "ALL" ? "choose a pack" : `${packCards.length} verse${packCards.length === 1 ? "" : "s"}`}</>
                 : <>Due: {dueCards.length} | Done: {completed}{sessionStart ? <> | {sessionElapsedMin}m</> : null}</>}
@@ -1253,10 +1301,10 @@ function App() {
           <section className="rounded-2xl shadow p-4 bg-white flex flex-wrap items-center justify-between gap-2">
             {settings.mode === "review" && (
               <div className="flex rounded-xl bg-gray-100 p-1 text-sm">
-                {[["due", "Due"], ["pack", "Whole pack"]].map(([v, label]) => (
+                {[["due", "Due"], ["bucket", "Bucket"], ["pack", "Whole"]].map(([v, label]) => (
                   <button
                     key={v}
-                    className={`px-3 py-1 rounded-lg ${reviewPrefs.view === v ? "bg-white shadow font-medium" : "text-gray-600"}`}
+                    className={`px-3 py-1 rounded-lg ${reviewView === v ? "bg-white shadow font-medium" : "text-gray-600"}`}
                     onClick={() => { setReviewPrefs((p) => ({ ...p, view: v })); setSessionQueue([]); setCompleted(0); }}
                   >
                     {label}
@@ -1269,7 +1317,9 @@ function App() {
                 ? "Writing session uses random order over the pack."
                 : wholePack
                 ? (filterPack === "ALL" ? "Whole pack: choose a pack" : `Whole pack: ${packCards.length} verse${packCards.length === 1 ? "" : "s"}`)
-                : `${dueBucket === "all" ? "Cards" : dueBucket} due now: ${dueCards.length}`}
+                : bucketView
+                ? `${reviewTabName}: ${bucketCards.length} verse${bucketCards.length === 1 ? "" : "s"}`
+                : `${reviewTab === "all" ? "Cards" : reviewTab} due now: ${dueCards.length}`}
             </div>
             {(settings.mode === "writing" || settings.mode === "test") && (
             <div className="flex gap-2">
@@ -1291,17 +1341,17 @@ function App() {
               )}
             </div>
             )}
-            {dueView && (
-              <div className="w-full grid grid-cols-7 gap-1 rounded-xl bg-gray-100 p-1 text-sm" role="group" aria-label="Due bucket">
+            {(dueView || bucketView) && (
+              <div className="w-full grid grid-cols-7 gap-1 rounded-xl bg-gray-100 p-1 text-sm" role="group" aria-label="Bucket">
                 {DUE_TABS.map((b) => {
-                  const n = Math.min(dueCounts[b] || 0, dueRemain);
+                  const n = dueView ? Math.min(dueCounts[b] || 0, dueRemain) : bucketCounts[b] || 0;
                   const name = b === "all" ? "All" : b;
                   return (
                     <button
                       key={b}
-                      aria-pressed={dueBucket === b}
-                      aria-label={`${name}: ${n} due`}
-                      className={`py-1 rounded-lg flex flex-col items-center leading-tight ${dueBucket === b ? "bg-white shadow font-medium" : n ? "text-gray-700" : "text-gray-400"}`}
+                      aria-pressed={reviewTab === b}
+                      aria-label={dueView ? `${name}: ${n} due` : `${name}: ${n} verse${n === 1 ? "" : "s"}`}
+                      className={`py-1 rounded-lg flex flex-col items-center leading-tight ${reviewTab === b ? "bg-white shadow font-medium" : n ? "text-gray-700" : "text-gray-400"}`}
                       onClick={() => { setReviewPrefs((p) => ({ ...p, bucket: b })); setSessionQueue([]); }}
                     >
                       <span>{name}</span>
@@ -1336,11 +1386,13 @@ function App() {
             <div className="text-center text-gray-500">
               {wholePack
                 ? "No verses in this pack."
+                : bucketView
+                ? (reviewTab === "all" ? "No verses." : `No verses in ${reviewTab}.`)
                 : settings.mode === "writing"
                 ? "Press Start Writing for a random order, or choose verses from 'View Verses' → 'Write selected now'."
                 : settings.mode === "test"
                   ? (test.active ? "All done! Press Reset Test to restart." : "Press Start Test to begin.")
-                  : dueView && dueBucket !== "all" ? `No ${dueBucket} verses due.` : "No cards due. Great job!"}
+                  : dueView && reviewTab !== "all" ? `No ${reviewTab} verses due.` : "No cards due. Great job!"}
             </div>
           ) : (
             <div className="space-y-4">
@@ -1355,7 +1407,7 @@ function App() {
                       ? <> · {lastReviewedText(currentCard)}</>
                       : settings.mode !== "test" && <> · {getActiveBucket(currentCard, settings.mode)}</>}
                   </div>
-                  {wholePack && <div>{packPos + 1} / {packCards.length}</div>}
+                  {navList && <div>{navPos + 1} / {navList.length}</div>}
                   {dueView && sessionQueue.length === 0 && <div>{dueDone + 1} / {dueDone + dueCards.length}</div>}
                 </div>
               ) : (
@@ -1404,10 +1456,10 @@ function App() {
                 </div>
               )}
 
-              {settings.mode === "review" && wholePack && (
+              {navList && (
                 <div className="grid grid-cols-2 gap-2">
-                  <button className="px-3 py-2 rounded-xl bg-gray-200" onClick={() => packGo(-1)}>◀ Prev</button>
-                  <button className="px-3 py-2 rounded-xl bg-indigo-600 text-white" onClick={() => packGo(1)}>Next ▶</button>
+                  <button className="px-3 py-2 rounded-xl bg-gray-200" onClick={() => navGo(-1)}>◀ Prev</button>
+                  <button className="px-3 py-2 rounded-xl bg-indigo-600 text-white" onClick={() => navGo(1)}>Next ▶</button>
                 </div>
               )}
 
@@ -2112,12 +2164,13 @@ function ReadPackView({ pack, cards }) {
 /* =========================
    Review's Whole pack view
 ========================= */
-// Per device: Due or Whole pack, the place in each pack, the Due bucket tab,
-// and how many verses were graded today from each Due list (for "2 / 4")
+// Per device: the view (Due, Bucket or Whole), the bucket tab shared by Due and Bucket,
+// the place in each pack (Whole) and bucket (Bucket), how many verses were graded today
+// from each Due list (for "2 / 4"), and which verses were graded today from each Bucket list
 const REVIEW_PREFS_KEY = "review-practice";
 const DUE_TABS = ["all", "1D", "3D", "7D", "14D", "30D", "90D"];
 function loadReviewPrefs() {
-  const d = { view: "due", at: {}, bucket: "all", runs: { day: "", done: {} } };
+  const d = { view: "due", at: {}, bucket: "all", runs: { day: "", done: {} }, bat: {}, bseen: { day: "", ids: {} } };
   try { return { ...d, ...(JSON.parse(localStorage.getItem(REVIEW_PREFS_KEY)) || {}) }; } catch { return d; }
 }
 function saveReviewPrefs(prefs) {
