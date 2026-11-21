@@ -699,8 +699,8 @@ function App() {
     return res;
   }, [capLog]);
 
-  // Due list (used by recognition/review)
-  const dueCards = useMemo(() => {
+  // Due list (used by recognition/review): everything due, before Review's bucket tab and the daily goal
+  const dueAll = useMemo(() => {
     const t = now();
     const key = settings.mode === "recognition" ? "fast" : "slow";
     let list = cards.filter((c) => (c?.srs?.[key]?.nextDue ?? 0) <= t);
@@ -716,9 +716,21 @@ function App() {
       if (ar !== br) return ar.localeCompare(br);
       return String(a.id).localeCompare(String(b.id));
     });
-    const remain = Math.max(0, dailyRemaining(settings.mode));
-    return list.slice(0, remain);
-  }, [cards, filterPack, settings.mode, daily, dailyReviewed, todayCaps]); // (deps ok if you like)
+    return list;
+  }, [cards, filterPack, settings.mode]);
+
+  // Review's Due view can show one bucket only; the daily goal still limits the list
+  const dueBucket = settings.mode === "review" && DUE_TABS.includes(reviewPrefs.bucket) ? reviewPrefs.bucket : "all";
+  const dueRemain = Math.max(0, dailyRemaining(settings.mode));
+  const dueCards = useMemo(() => {
+    const list = dueBucket === "all" ? dueAll : dueAll.filter((c) => (c?.srs?.slow?.bucket || "0D") === dueBucket);
+    return list.slice(0, dueRemain);
+  }, [dueAll, dueBucket, dueRemain]);
+  const dueCounts = useMemo(() => {
+    const n = { all: dueAll.length };
+    for (const c of dueAll) { const b = c?.srs?.slow?.bucket || "0D"; n[b] = (n[b] || 0) + 1; }
+    return n;
+  }, [dueAll]);
 
 
   // Read mode and Review's Whole pack view: the whole selected pack in pack order
@@ -733,6 +745,11 @@ function App() {
         return String(a.ref || "").localeCompare(String(b.ref || ""));
       });
   }, [cards, filterPack, settings.mode, wholePack]);
+
+  // Due view position ("2 / 4"): verses graded today from this list, plus the ones left
+  const dueView = settings.mode === "review" && !wholePack;
+  const dueRunKey = `${filterPack}|${dueBucket}`;
+  const dueDone = (reviewPrefs.runs?.day === todayKey() && reviewPrefs.runs.done?.[dueRunKey]) || 0;
 
   // Whole pack view: the place in each pack is remembered on this device
   const packPos = wholePack ? Math.max(0, packCards.findIndex((c) => c.id === reviewPrefs.at?.[filterPack])) : 0;
@@ -761,7 +778,7 @@ function App() {
       const id = sessionQueue[0];
       return cards.find((c) => c.id === id) || null;
     }
-    if (settings.mode === "writing") return null; // require Start Session / manual
+    if (settings.mode === "writing") return null; // require Start Writing / manual
     return dueCards[0];
   }, [sessionQueue, cards, dueCards, settings.mode, test.active, test.queue, wholePack, packCards, packPos]);
 
@@ -804,7 +821,7 @@ function App() {
     return Math.max(0, goal - done);
   }
 
-  // Start session
+  // Start a Test or a random Writing session (Recognition and Review just follow the due list)
   async function startSession() {
     try { if (typeof window.pullSRS === 'function') await window.pullSRS(); } catch {}
     // TEST mode: initialize or resume Test queue; do NOT touch SRS buckets or history
@@ -821,10 +838,7 @@ function App() {
       pool = shuffleInPlace(pool);
       setSessionQueue(pool.map(c => c.id));
       setWritingSubmitted(false);
-      return;
     }
-    // unchanged: freeze due list for other modes
-    setSessionQueue(dueCards.map(c => c.id));
   }
 
   // Build a randomized id-queue from current cards and selected pack
@@ -961,6 +975,7 @@ function App() {
 
   function handleGrade(label) {
     if (!currentCard) return;
+    const fromDueList = dueView && sessionQueue.length === 0;
 
     // scheduleKey for SRS write: slow for writing/review, fast for recognition
     const scheduleKey = settings.mode === "recognition" ? "fast" : "slow";
@@ -991,6 +1006,14 @@ function App() {
     popQueueIfHeadIs(currentCard.id);
     if (settings.mode === "writing") setWritingSubmitted(false);
     if (wholePack) packGo(1);
+    if (fromDueList) {
+      setReviewPrefs((p) => {
+        const day = todayKey();
+        const done = p.runs?.day === day ? { ...p.runs.done } : {};
+        done[dueRunKey] = (done[dueRunKey] || 0) + 1;
+        return { ...p, runs: { day, done } };
+      });
+    }
   }
 
   // NEW: delete selected cards (server attempt + local removal, with confirmation)
@@ -1141,7 +1164,7 @@ function App() {
                 ? <>Test: left {test.queue.length} · done {test.total - test.queue.length} / {test.total} | {sessionElapsedMin}m</>
                 : settings.mode === "read" || wholePack
                 ? <>{wholePack ? "Review" : "Read"}: {filterPack === "ALL" ? "choose a pack" : `${packCards.length} verse${packCards.length === 1 ? "" : "s"}`}</>
-                : <>Due: {dueCards.length} | Done: {completed} | {sessionElapsedMin}m</>}
+                : <>Due: {dueCards.length} | Done: {completed}{sessionStart ? <> | {sessionElapsedMin}m</> : null}</>}
             </div>
             {/* Sync chip (unchanged) */}
             {(() => {
@@ -1246,15 +1269,15 @@ function App() {
                 ? "Writing session uses random order over the pack."
                 : wholePack
                 ? (filterPack === "ALL" ? "Whole pack: choose a pack" : `Whole pack: ${packCards.length} verse${packCards.length === 1 ? "" : "s"}`)
-                : `Cards due now: ${dueCards.length}`}
+                : `${dueBucket === "all" ? "Cards" : dueBucket} due now: ${dueCards.length}`}
             </div>
-            {!wholePack && (
+            {(settings.mode === "writing" || settings.mode === "test") && (
             <div className="flex gap-2">
               <button
                 className="px-4 py-2 rounded-xl bg-indigo-600 text-white"
                 onClick={startSession}
               >
-                Start Session
+                {settings.mode === "test" ? "Start Test" : "Start Writing"}
               </button>
 
               {settings.mode === "test" && (
@@ -1267,6 +1290,26 @@ function App() {
                 </button>
               )}
             </div>
+            )}
+            {dueView && (
+              <div className="w-full grid grid-cols-7 gap-1 rounded-xl bg-gray-100 p-1 text-sm" role="group" aria-label="Due bucket">
+                {DUE_TABS.map((b) => {
+                  const n = Math.min(dueCounts[b] || 0, dueRemain);
+                  const name = b === "all" ? "All" : b;
+                  return (
+                    <button
+                      key={b}
+                      aria-pressed={dueBucket === b}
+                      aria-label={`${name}: ${n} due`}
+                      className={`py-1 rounded-lg flex flex-col items-center leading-tight ${dueBucket === b ? "bg-white shadow font-medium" : n ? "text-gray-700" : "text-gray-400"}`}
+                      onClick={() => { setReviewPrefs((p) => ({ ...p, bucket: b })); setSessionQueue([]); }}
+                    >
+                      <span>{name}</span>
+                      <span className="text-[11px] text-gray-500">{n}</span>
+                    </button>
+                  );
+                })}
+              </div>
             )}
           </section>
         )}
@@ -1294,10 +1337,10 @@ function App() {
               {wholePack
                 ? "No verses in this pack."
                 : settings.mode === "writing"
-                ? "Start a writing session (randomized) or choose verses from 'View Verses' → 'Write selected now'."
+                ? "Press Start Writing for a random order, or choose verses from 'View Verses' → 'Write selected now'."
                 : settings.mode === "test"
-                  ? (test.active ? "All done! Press Reset Test to restart." : "Press Start Session to begin Test.")
-                  : "No cards due. Great job!"}
+                  ? (test.active ? "All done! Press Reset Test to restart." : "Press Start Test to begin.")
+                  : dueView && dueBucket !== "all" ? `No ${dueBucket} verses due.` : "No cards due. Great job!"}
             </div>
           ) : (
             <div className="space-y-4">
@@ -1313,6 +1356,7 @@ function App() {
                       : settings.mode !== "test" && <> · {getActiveBucket(currentCard, settings.mode)}</>}
                   </div>
                   {wholePack && <div>{packPos + 1} / {packCards.length}</div>}
+                  {dueView && sessionQueue.length === 0 && <div>{dueDone + 1} / {dueDone + dueCards.length}</div>}
                 </div>
               ) : (
                 <div className="flex items-center justify-between text-xs text-gray-600">
@@ -2068,10 +2112,12 @@ function ReadPackView({ pack, cards }) {
 /* =========================
    Review's Whole pack view
 ========================= */
-// Per device: Due or Whole pack, and the place in each pack
+// Per device: Due or Whole pack, the place in each pack, the Due bucket tab,
+// and how many verses were graded today from each Due list (for "2 / 4")
 const REVIEW_PREFS_KEY = "review-practice";
+const DUE_TABS = ["all", "1D", "3D", "7D", "14D", "30D", "90D"];
 function loadReviewPrefs() {
-  const d = { view: "due", at: {} };
+  const d = { view: "due", at: {}, bucket: "all", runs: { day: "", done: {} } };
   try { return { ...d, ...(JSON.parse(localStorage.getItem(REVIEW_PREFS_KEY)) || {}) }; } catch { return d; }
 }
 function saveReviewPrefs(prefs) {
