@@ -57,7 +57,7 @@
       deck, startedAt: at, endsAt: at + ROUND_MS,
       wave: 0, turn: 0, enemyStartedAt: at, enemyEndsAt: at + WAVES[0].enemyMs,
       health: BASE_HEALTH, bossHealth: BOSS_HEALTH, hits: 0, misses: [],
-      upgrade: null, feedback: null, outcome: null,
+      draft: "", upgrade: null, feedback: null, outcome: null,
     };
   }
 
@@ -65,15 +65,19 @@
     return round.deck[round.turn % round.deck.length];
   }
 
-  function resolveTurn(round, at, feedback) {
+  function recordMiss(round, typed) {
+    return [...round.misses, { card: currentEnemy(round), typed }];
+  }
+
+  function resolveTurn(round, at, feedback, typed = round.draft) {
     const hit = feedback === "hit";
     const health = round.health - Number(!hit);
     const damage = hit && round.wave === WAVES.length - 1 ? (round.upgrade === "power" ? 2 : 1) : 0;
     const bossHealth = Math.max(0, round.bossHealth - damage);
     return {
-      ...round, health, bossHealth, feedback,
+      ...round, health, bossHealth, feedback, draft: "",
       hits: round.hits + Number(hit),
-      misses: hit ? round.misses : [...round.misses, currentEnemy(round)],
+      misses: hit ? round.misses : recordMiss(round, typed),
       outcome: health === 0 ? "defeat" : bossHealth === 0 ? "victory" : null,
       turn: round.turn + 1, enemyStartedAt: at, enemyEndsAt: at + WAVES[round.wave].enemyMs,
     };
@@ -81,7 +85,10 @@
 
   function advanceRound(round, at) {
     if (round.outcome) return round;
-    if (at >= round.endsAt) return { ...round, outcome: "time" };
+    if (at >= round.endsAt) {
+      const misses = round.draft.trim() ? recordMiss(round, round.draft) : round.misses;
+      return { ...round, misses, draft: "", outcome: "time" };
+    }
     let wave = round.wave;
     while (wave + 1 < WAVES.length && at - round.startedAt >= WAVES[wave + 1].startsAt) wave++;
     if (wave !== round.wave) round = { ...round, wave };
@@ -94,7 +101,7 @@
     if (next.outcome || next.turn !== turn) return next;
     const typed = letters(text);
     if (typed.length !== ANSWER_LENGTH) return next;
-    return resolveTurn(next, at, typed.join("") === currentEnemy(next).answer ? "hit" : "miss");
+    return resolveTurn(next, at, typed.join("") === currentEnemy(next).answer ? "hit" : "miss", text);
   }
 
   function chooseUpgrade(round, at, upgrade) {

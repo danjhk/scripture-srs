@@ -33,10 +33,10 @@ test("attacks require exactly five letters and ignore spaces, case and accents",
   assert.equal(hit.turn, 1);
   assert.equal(attack(round, 1_000, 0, "E\u0301 BOM q").hits, 1);
   assert.equal(attack(round, 1_000, 0, "Ébomq").hits, 1);
-  const miss = attack(round, 1_000, 0, "Vonta");
+  const miss = attack(round, 1_000, 0, "VÔn ta");
   assert.equal(miss.hits, 0);
   assert.equal(miss.health, 5);
-  assert.deepEqual(miss.misses, [currentEnemy(round)]);
+  assert.deepEqual(miss.misses, [{ card: currentEnemy(round), typed: "VÔn ta" }]);
 });
 
 test("an expired prompt cannot fire an attack on the next verse or after the round ends", () => {
@@ -45,9 +45,21 @@ test("an expired prompt cannot fire an attack on the next verse or after the rou
   assert.equal(next.feedback, "timeout");
   assert.equal(next.hits, 0);
   assert.equal(next.turn, 1);
+  assert.equal(next.misses[0].typed, "");
   const final = attack(next, 180_000, 1, "Ébomq");
   assert.equal(final.outcome, "time");
   assert.equal(final.hits, 0);
+});
+
+test("unfinished answers are kept on a prompt timeout and at the end of the round", () => {
+  const round = { ...startRound(makeDeck([card], 0), 0), draft: "É b" };
+  const next = advanceRound(round, 15_000);
+  assert.equal(next.draft, "");
+  assert.deepEqual(next.misses, [{ card: currentEnemy(round), typed: "É b" }]);
+  const final = advanceRound({ ...next, draft: "E bo" }, 180_000);
+  assert.equal(final.outcome, "time");
+  assert.equal(final.health, next.health);
+  assert.deepEqual(final.misses.map(({ typed }) => typed), ["É b", "E bo"]);
 });
 
 test("the boss uses the same five-letter attacks and the power upgrade increases damage", () => {

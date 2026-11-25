@@ -56,7 +56,6 @@ function WakeUpGame({ userId, onClose }) {
 function WakeUpBattle({ deck }) {
   const [round, setRound] = React.useState(() => WakeUp.startRound(deck, performance.now()));
   const [clock, setClock] = React.useState(round.startedAt);
-  const [draft, setDraft] = React.useState({ turn: 0, text: "" });
   const input = React.useRef(null);
   const resultHeading = React.useRef(null);
   const composing = React.useRef(false);
@@ -81,21 +80,36 @@ function WakeUpBattle({ deck }) {
 
   if (round.outcome) {
     const heading = { victory: "Boss defeated", defeat: "Base fell", time: "Time’s up" }[round.outcome];
-    const missed = [...new Map(round.misses.map((card) => [card.id, card])).values()];
+    const missed = new Map();
+    for (const { card, typed } of round.misses) {
+      if (!missed.has(card.id)) missed.set(card.id, { card, attempts: [] });
+      missed.get(card.id).attempts.push(typed);
+    }
     return (
       <section className="space-y-4 rounded-2xl border border-slate-800 bg-slate-900 p-4 sm:p-5">
         <div>
           <h2 ref={resultHeading} tabIndex={-1} className="text-2xl font-bold">{heading}</h2>
-          <p className="mt-1 text-slate-300">{round.hits} {round.hits === 1 ? "hit" : "hits"} · {missed.length} {missed.length === 1 ? "verse missed" : "verses missed"}</p>
+          <p className="mt-1 text-slate-300">{round.hits} {round.hits === 1 ? "hit" : "hits"} · {missed.size} {missed.size === 1 ? "verse missed" : "verses missed"}</p>
         </div>
-        {missed.length > 0 && (
+        {missed.size > 0 && (
           <ul className="divide-y divide-slate-800">
-            {missed.map((card) => (
+            {Array.from(missed.values(), ({ card, attempts }) => (
               <li key={card.id} className="py-3 first:pt-0 last:pb-0">
-                <div className="flex flex-wrap items-baseline justify-between gap-x-3">
-                  <strong>{card.ref}</strong>
-                  <code className="uppercase tracking-widest text-teal-300">{card.answer}</code>
-                </div>
+                <strong>{card.ref}</strong>
+                <dl className="mb-2 mt-1 grid grid-cols-[auto_minmax(0,1fr)] gap-x-3 gap-y-1 text-sm">
+                  <dt className="text-slate-300">You typed</dt>
+                  <dd>
+                    {attempts.map((typed, index) => (
+                      <div key={index}>
+                        {typed.trim()
+                          ? <code className="whitespace-pre-wrap break-words text-rose-300">{typed}</code>
+                          : <span className="text-slate-400">No answer entered</span>}
+                      </div>
+                    ))}
+                  </dd>
+                  <dt className="text-slate-300">Correct</dt>
+                  <dd><code className="uppercase tracking-widest text-teal-300">{card.answer}</code></dd>
+                </dl>
                 <p className="mt-1 text-sm leading-relaxed text-slate-300">{card.text}</p>
               </li>
             ))}
@@ -105,7 +119,7 @@ function WakeUpBattle({ deck }) {
     );
   }
 
-  const answer = draft.turn === round.turn ? draft.text : "";
+  const answer = round.draft;
   const count = WakeUp.letters(answer).length;
   const seconds = Math.max(0, Math.ceil((round.endsAt - clock) / 1000));
   const time = `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, "0")}`;
@@ -113,6 +127,11 @@ function WakeUpBattle({ deck }) {
   const wave = WakeUp.WAVES[round.wave];
   const boss = round.wave === WakeUp.WAVES.length - 1;
   const feedback = { hit: "Hit!", miss: "Miss. Base took damage.", timeout: "Enemy reached the base." }[round.feedback];
+
+  function updateAnswer(event) {
+    const draft = event.target.value;
+    setRound((current) => current.turn === round.turn && !current.outcome ? { ...current, draft } : current);
+  }
 
   function submit(event) {
     event.preventDefault();
@@ -151,7 +170,7 @@ function WakeUpBattle({ deck }) {
         <form onSubmit={submit}>
           <label htmlFor="wake-up-answer" className="block text-sm text-slate-300">Type the first five letters. Spaces and accents are ignored.</label>
           <div className="mt-2 flex gap-2">
-            <input id="wake-up-answer" ref={input} autoFocus value={answer} onChange={(event) => setDraft({ turn: round.turn, text: event.target.value })}
+            <input id="wake-up-answer" ref={input} autoFocus value={answer} onChange={updateAnswer}
               onCompositionStart={() => { composing.current = true; }} onCompositionEnd={() => { composing.current = false; }}
               autoComplete="off" autoCapitalize="off" autoCorrect="off" spellCheck={false} enterKeyHint="go" lang="pt"
               className="min-h-11 min-w-0 flex-1 rounded-lg border border-slate-600 bg-slate-950 px-3 font-mono text-lg text-white focus:border-teal-300 focus:outline-none focus:ring-2 focus:ring-teal-300/40" />
