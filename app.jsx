@@ -578,6 +578,9 @@ function App() {
   // Needed by header & Advanced modal
   const [packManagerOpen, setPackManagerOpen] = useState(false);
   const [syncOpen, setSyncOpen] = useState(false);
+  const [userId, setUserId] = useState(() => window.srsUserId ?? null);
+  const [wakeUpUser, setWakeUpUser] = useState(null);
+  const wakeUpOpen = userId !== null && wakeUpUser === userId;
   const [test, setTest] = useState(defaultTestState());
   const [hydrated, setHydrated] = useState(false);
   const fileInputRef = useRef(null);
@@ -591,6 +594,15 @@ function App() {
 
   // Sync status
   const [sync, setSync] = useState(() => (window.srsSync ?? { pushing:false, pulling:false, lastPullAt:null, lastPushAt:null }));
+  useEffect(() => {
+    function onAuth() {
+      setUserId(window.srsUserId ?? null);
+      setWakeUpUser(null);
+    }
+    window.addEventListener("srs-auth", onAuth);
+    onAuth();
+    return () => window.removeEventListener("srs-auth", onAuth);
+  }, []);
   useEffect(() => {
     const onSync = () => setSync({ ...(window.srsSync ?? {}) });
     window.addEventListener('srs-sync', onSync);
@@ -821,6 +833,7 @@ function App() {
   // Keyboard shortcuts (DISABLE in writing mode) — moved below currentCard
   useEffect(() => {
     function onKey(e) {
+      if (wakeUpOpen) return;
       const tag = (e.target && e.target.tagName) ? e.target.tagName.toLowerCase() : "";
       if (tag === "input" || tag === "textarea" || e.target.isContentEditable) return;
 
@@ -846,7 +859,7 @@ function App() {
     }
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [currentCard, settings.mode, test.active, test.queue]);
+  }, [currentCard, settings.mode, test.active, test.queue, wakeUpOpen]);
 
   // Reset "submitted" when card/mode changes
   useEffect(() => { setWritingSubmitted(false); }, [settings.mode, currentCard?.id]);
@@ -1198,6 +1211,8 @@ function App() {
   // Helpers for UI conditions
   const showGradeButtons = !(settings.mode === "writing" && !writingSubmitted);
 
+  if (wakeUpOpen) return <WakeUpGame userId={userId} onClose={() => setWakeUpUser(null)} />;
+
   return (
     <div className="min-h-screen bg-gray-50 p-4 pb-28 sm:pb-4">
       <div className="max-w-3xl mx-auto space-y-4">
@@ -1205,6 +1220,11 @@ function App() {
           <h1 className="text-2xl font-bold">Scripture SRS</h1>
           <div className="flex flex-wrap items-center gap-2 w-full sm:w-auto">
             <button className="px-3 py-2 rounded-xl bg-gray-200 shrink-0" onClick={() => setPackManagerOpen(true)}>Manage Packs</button>
+            {userId && (
+              <button type="button" className="shrink-0 rounded-xl bg-teal-700 px-3 py-2 font-medium text-white hover:bg-teal-800" onClick={() => setWakeUpUser(userId)}>
+                Wake-Up
+              </button>
+            )}
             <div className="text-sm text-gray-600 min-w-0">
               {settings.mode === "test"
                 ? <>Test: left {test.queue.length} · done {test.total - test.queue.length} / {test.total} | {sessionElapsedMin}m</>

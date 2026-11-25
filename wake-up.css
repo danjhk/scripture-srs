@@ -1,0 +1,64 @@
+.wake-up-arena {
+  position: relative;
+  height: 5.25rem;
+  overflow: hidden;
+  background: radial-gradient(ellipse at 8% 95%, #115e59 0%, transparent 52%),
+    linear-gradient(105deg, #10263a, #211a3d);
+}
+
+.wake-up-lane {
+  position: absolute;
+  inset: auto 1rem 0.85rem;
+  height: 1.65rem;
+  border-bottom: 1px dashed #64748b;
+}
+
+.wake-up-base {
+  position: absolute;
+  bottom: 0;
+  left: 1%;
+  width: 1.65rem;
+  height: 1.8rem;
+  border: 2px solid #5eead4;
+  border-radius: 0.35rem 0.35rem 0 0;
+  background: #134e4a;
+  box-shadow: 0 0 0.8rem #2dd4bf4d;
+}
+
+.wake-up-enemy {
+  position: absolute;
+  bottom: 0.25rem;
+  width: 1.2rem;
+  height: 1.2rem;
+  border: 2px solid #fda4af;
+  border-radius: 0.25rem;
+  background: #9f1239;
+  transform: rotate(45deg);
+  transition: right 100ms linear;
+}
+
+.wake-up-enemy-boss {
+  width: 1.65rem;
+  height: 1.65rem;
+  border-color: #ddd6fe;
+  background: #6d28d9;
+}
+
+.wake-up-shot {
+  position: absolute;
+  inset: auto 7% 0.64rem 3%;
+  height: 0.15rem;
+  background: #99f6e4;
+  pointer-events: none;
+  animation: wake-up-shot 280ms ease-out both;
+}
+
+@keyframes wake-up-shot {
+  from { opacity: 0.9; transform: scaleX(0.15); transform-origin: left; }
+  to { opacity: 0; transform: scaleX(1); transform-origin: left; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .wake-up-enemy { transition: none; }
+  .wake-up-shot { display: none; }
+}
