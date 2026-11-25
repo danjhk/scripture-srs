@@ -1,6 +1,7 @@
 const assert = require("node:assert/strict");
 const test = require("node:test");
-const { attack, advanceRound, chooseUpgrade, currentEnemy, makeDeck, startRound } = require("../wake-up.js");
+const { attack, advanceRound, chooseUpgrade, currentEnemy, makeDeck, makeKoreanDeck, startRound } = require("../wake-up.js");
+const { packs } = require("../krv/verses.json");
 
 const card = {
   id: "treinamento",
@@ -71,4 +72,29 @@ test("the boss uses the same five-letter attacks and the power upgrade increases
   }
   assert.equal(round.hits, 3);
   assert.equal(round.outcome, "victory");
+});
+
+test("Korean prompts cover 5확신, 8동행, 60구절 and DEP1–8 and label verses shared by packs", () => {
+  const deck = makeKoreanDeck([...packs, { name: "DEP9 - Extra", verses: [{ ref: "창 1:1", text: "태초에" }] }]);
+  const byRef = new Map(deck.map((entry) => [entry.ref, entry]));
+  assert.equal(byRef.get("5확신 - 요일5:11,12").answer, "또증");
+  assert.equal(byRef.get("DEP1 - 요일5:11,12").answer, "또증");
+  assert.equal(byRef.get("8동행 - 요15:5").answer, "나는");
+  assert.equal(byRef.get("60구절 - 딛3:5").answer, "우리");
+  assert.equal(byRef.get("DEP1 - 딛3:5").answer, "우리");
+  assert.equal(byRef.get("행17:11").answer, "베뢰");
+  assert.ok(!deck.some(({ id }) => id.startsWith("DEP9|")));
+  for (const { name } of packs) {
+    assert.ok(deck.some(({ id }) => id.startsWith(`${name.split(" - ")[0]}|`)), name);
+  }
+});
+
+test("Korean attacks use two syllables from the verse body and ignore spaces", () => {
+  const deck = makeKoreanDeck(packs).filter(({ ref }) => ref === "5확신 - 요일5:11,12");
+  const round = startRound(deck, 0);
+  assert.equal(attack(round, 1_000, 0, "또"), round);
+  assert.equal(attack(round, 1_000, 0, "또 증거"), round);
+  assert.equal(attack(round, 1_000, 0, "구원").feedback, "miss");
+  assert.equal(attack(round, 1_000, 0, "또증").hits, 1);
+  assert.equal(attack(round, 1_000, 0, "또 증".normalize("NFD")).hits, 1);
 });
