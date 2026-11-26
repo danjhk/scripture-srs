@@ -17,7 +17,10 @@
       time: "남은 시간", base: "기지", hits: "명중", bossHealth: "보스 체력",
       waves: ["1차 공세", "2차 공세", "보스"],
       instruction: "본문의 첫 두 글자를 입력하세요. 띄어쓰기는 무시해요.",
-      titleInstruction: "제목의 첫 두 글자를 입력하세요. 띄어쓰기는 무시해요.",
+      titleInstructions: {
+        title: "제목의 첫 두 글자를 입력하세요. 띄어쓰기는 무시해요.",
+        subtitle: "소제목의 첫 두 글자를 입력하세요. 띄어쓰기는 무시해요.",
+      },
       attack: "공격", units: "글자", upgrade: "강화 선택",
       repair: "기지 체력 +2", power: "보스 공격력 +1",
       feedback: { hit: "명중!", miss: "틀렸어요. 기지 체력이 줄었어요.", timeout: "적이 기지에 도착했어요." },
@@ -67,7 +70,6 @@
 
   function mount(host, deck, language = "en", answerSource = "text") {
     const copy = labels[language];
-    const instruction = answerSource === "title" && copy.titleInstruction ? copy.titleInstruction : copy.instruction;
     // Only interface strings are inserted as markup. Verse data and answers use textContent.
     host.innerHTML = `
       <section class="wake-up-panel">
@@ -85,7 +87,7 @@
         <div class="wake-up-controls">
           <h2 data-reference lang="${copy.answerLanguage}"></h2>
           <p class="wake-up-hint" hidden></p>
-          <label for="wake-up-answer">${instruction}</label>
+          <label for="wake-up-answer"></label>
           <div class="wake-up-entry">
             <input id="wake-up-answer" lang="${copy.answerLanguage}" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false" enterkeyhint="go" />
             <button type="button" data-attack>${copy.attack}</button>
@@ -103,6 +105,7 @@
     const wave = find("[data-wave]"), boss = find("[data-boss]"), lane = find(".wake-up-lane");
     const reference = find("[data-reference]"), input = find("input"), attack = find("[data-attack]");
     const hint = find(".wake-up-hint");
+    const instruction = find('label[for="wake-up-answer"]');
     const feedback = find('[role="status"]'), count = find("[data-count]");
     const upgrades = find(".wake-up-upgrades"), repair = find("[data-repair]"), power = find("[data-power]");
     let enemy = find(".wake-up-enemy");
@@ -145,6 +148,7 @@
         shownTurn = round.turn;
         const card = WakeUp.currentEnemy(round);
         setText(reference, card.ref);
+        setText(instruction, copy.titleInstructions?.[card.answerKind || answerSource] || copy.instruction);
         setText(hint, card.hint || "");
         hint.hidden = !card.hint;
         if (composingTurn !== null) {

@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width,initial-scale=1" />
 <meta name="robots" content="noindex" />
 <title>개역한글 암송 게임</title>
-<link rel="stylesheet" href="wake-up.css?v=3" />
+<link rel="stylesheet" href="wake-up.css?v=4" />
 <style>
   :root {
     --bg: #f8fafc; --card: #fff; --text: #0f172a; --muted: #475569;
@@ -45,7 +45,13 @@
     cursor: pointer;
   }
   .choice:has(input:checked) { border-color: var(--accent); background: var(--selected); }
-  .choice input { width: 17px; height: 17px; margin: 0; accent-color: var(--accent); }
+  .choice input, .select-all input { width: 17px; height: 17px; margin: 0; accent-color: var(--accent); }
+  .select-all { display: inline-flex; align-items: center; gap: 8px; min-height: 44px; cursor: pointer; }
+  .tms-choices { grid-template-columns: repeat(5, minmax(0, 1fr)); }
+  .tms-choices .choice { justify-content: center; gap: 4px; padding: 6px 3px; }
+  @media (min-width: 420px) {
+    .dep-choices { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+  }
   :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
   .setup-button {
     min-height: 44px;
@@ -76,8 +82,31 @@
       <div class="choices">
         <label class="choice"><input type="checkbox" name="group" value="5확신" checked />5확신</label>
         <label class="choice"><input type="checkbox" name="group" value="8동행" checked />8동행</label>
-        <label class="choice"><input type="checkbox" name="group" value="60구절" checked />60구절</label>
-        <label class="choice"><input type="checkbox" name="group" value="242" checked />242</label>
+      </div>
+    </fieldset>
+
+    <fieldset data-pack-group="60구절">
+      <legend><label class="select-all"><input type="checkbox" data-select-all checked />60구절 전체 선택</label></legend>
+      <div class="choices tms-choices">
+        <label class="choice"><input type="checkbox" name="group" value="60구절 A" checked />A</label>
+        <label class="choice"><input type="checkbox" name="group" value="60구절 B" checked />B</label>
+        <label class="choice"><input type="checkbox" name="group" value="60구절 C" checked />C</label>
+        <label class="choice"><input type="checkbox" name="group" value="60구절 D" checked />D</label>
+        <label class="choice"><input type="checkbox" name="group" value="60구절 E" checked />E</label>
+      </div>
+    </fieldset>
+
+    <fieldset data-pack-group="242">
+      <legend><label class="select-all"><input type="checkbox" data-select-all checked />242 전체 선택</label></legend>
+      <div class="choices dep-choices">
+        <label class="choice"><input type="checkbox" name="group" value="DEP1" checked />DEP1</label>
+        <label class="choice"><input type="checkbox" name="group" value="DEP2" checked />DEP2</label>
+        <label class="choice"><input type="checkbox" name="group" value="DEP3" checked />DEP3</label>
+        <label class="choice"><input type="checkbox" name="group" value="DEP4" checked />DEP4</label>
+        <label class="choice"><input type="checkbox" name="group" value="DEP5" checked />DEP5</label>
+        <label class="choice"><input type="checkbox" name="group" value="DEP6" checked />DEP6</label>
+        <label class="choice"><input type="checkbox" name="group" value="DEP7" checked />DEP7</label>
+        <label class="choice"><input type="checkbox" name="group" value="DEP8" checked />DEP8</label>
       </div>
     </fieldset>
 
@@ -89,6 +118,14 @@
       </div>
     </fieldset>
 
+    <fieldset id="depTitleOptions" hidden>
+      <legend>DEP2–7에서 외울 항목</legend>
+      <div class="choices">
+        <label class="choice"><input type="radio" name="depTitle" value="heading" checked />제목</label>
+        <label class="choice"><input type="radio" name="depTitle" value="subtitle" />소제목</label>
+      </div>
+    </fieldset>
+
     <p id="setupStatus" role="status">구절을 불러오는 중…</p>
     <button id="startGame" type="submit" class="setup-button" disabled>게임 시작</button>
   </form>
@@ -97,8 +134,8 @@
   <footer id="credit"></footer>
 </main>
 
-<script src="wake-up.js?v=3"></script>
-<script src="wake-up-battle.js?v=3"></script>
+<script src="wake-up.js?v=4"></script>
+<script src="wake-up-battle.js?v=4"></script>
 <script>
 "use strict";
 const setup = document.getElementById("gameSetup");
@@ -106,13 +143,18 @@ const start = document.getElementById("startGame");
 const back = document.getElementById("backToSetup");
 const battle = document.getElementById("krvWakeUpBattle");
 const setupStatus = document.getElementById("setupStatus");
+const depTitleOptions = document.getElementById("depTitleOptions");
+const packGroups = Array.from(setup.querySelectorAll("[data-pack-group]"), (group) => ({
+  all: group.querySelector("[data-select-all]"),
+  parts: [...group.querySelectorAll('[name="group"]')],
+}));
 const settingsKey = "krv-wake-up-settings";
 let packs;
 let stopBattle;
 
 function readSettings() {
   const form = new FormData(setup);
-  return { groups: form.getAll("group"), answerSource: form.get("target") };
+  return { groups: form.getAll("group"), answerSource: form.get("target"), depTitleSource: form.get("depTitle") };
 }
 
 function restoreSettings() {
@@ -120,10 +162,15 @@ function restoreSettings() {
     const saved = JSON.parse(localStorage.getItem(settingsKey));
     if (Array.isArray(saved?.groups)) {
       for (const input of setup.querySelectorAll('[name="group"]')) {
-        input.checked = saved.groups.includes(input.value);
+        const parent = input.closest("[data-pack-group]")?.dataset.packGroup;
+        input.checked = saved.groups.includes(input.value) || saved.groups.includes(parent);
       }
     }
-    if (saved?.answerSource === "title") setup.querySelector('[value="title"]').checked = true;
+    if (saved?.answerSource === "title") setup.querySelector('[name="target"][value="title"]').checked = true;
+    const oldTitleMode = saved?.answerSource === "title" && !saved.depTitleSource;
+    if (saved?.depTitleSource === "subtitle" || oldTitleMode) {
+      setup.querySelector('[name="depTitle"][value="subtitle"]').checked = true;
+    }
   } catch {}
 }
 
@@ -132,9 +179,16 @@ function showStatus(message) {
   setupStatus.hidden = !message;
 }
 
-function updateStart() {
+function updateSetup() {
+  for (const { all, parts } of packGroups) {
+    const selected = parts.filter((part) => part.checked).length;
+    all.checked = selected === parts.length;
+    all.indeterminate = selected > 0 && selected < parts.length;
+  }
+  const settings = readSettings();
+  depTitleOptions.hidden = settings.answerSource !== "title" || !settings.groups.some((pack) => /^DEP[2-7]$/.test(pack));
   if (!packs) return;
-  start.disabled = readSettings().groups.length === 0;
+  start.disabled = settings.groups.length === 0;
   showStatus(start.disabled ? "한 개 이상의 팩을 선택하세요." : "");
 }
 
@@ -147,9 +201,14 @@ function shuffle(items) {
 }
 
 restoreSettings();
-setup.addEventListener("change", () => {
+updateSetup();
+setup.addEventListener("change", (event) => {
+  const selectedGroup = packGroups.find(({ all }) => all === event.target);
+  if (selectedGroup) {
+    for (const part of selectedGroup.parts) part.checked = selectedGroup.all.checked;
+  }
   try { localStorage.setItem(settingsKey, JSON.stringify(readSettings())); } catch {}
-  updateStart();
+  updateSetup();
 });
 setup.addEventListener("submit", (event) => {
   event.preventDefault();
@@ -185,7 +244,7 @@ fetch("krv/verses.json")
     }
     packs = data.packs;
     document.getElementById("credit").textContent = `본문: ${data.source}`;
-    updateStart();
+    updateSetup();
   })
   .catch(() => showStatus("게임을 불러오지 못했어요. 페이지를 새로 고침해 주세요."));
 </script>

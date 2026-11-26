@@ -6,6 +6,8 @@
   const ANSWER_LENGTH = 5;
   const KOREAN_ANSWER_LENGTH = 2;
   const KOREAN_GROUPS = ["5확신", "8동행", "60구절", "242"];
+  const TMS_PARTS = ["A", "B", "C", "D", "E"];
+  const VERSES_PER_TMS_PART = 12;
   const ROUND_MS = 180_000;
   const BASE_HEALTH = 6;
   const BOSS_HEALTH = 6;
@@ -54,23 +56,31 @@
     return deck;
   }
 
-  function makeKoreanDeck(packs, { groups = KOREAN_GROUPS, answerSource = "text" } = {}) {
+  function makeKoreanDeck(packs, { groups = KOREAN_GROUPS, answerSource = "text", depTitleSource = "subtitle" } = {}) {
     const cards = [];
     const packsByReference = new Map();
     const promptsByPack = new Map();
     const selected = new Set(groups);
+    const titleMode = answerSource === "title";
     for (const { name, verses } of packs) {
       const dep = /^DEP[1-8](?=\s|[-–—]|$)/u.exec(name)?.[0];
       const group = dep ? "242" : name;
       if (!KOREAN_GROUPS.includes(group)) continue;
       const pack = dep || name;
-      for (const verse of verses) {
+      const splitDepTitles = titleMode && /^DEP[2-7]$/.test(pack);
+      for (const [index, verse] of verses.entries()) {
         const reference = verse.ref.trim().replace(/\s+(?=\d)/g, "");
         if (!packsByReference.has(reference)) packsByReference.set(reference, new Set());
         packsByReference.get(reference).add(pack);
-        if (!selected.has(group)) continue;
+        const part = group === "60구절" ? TMS_PARTS[Math.floor(index / VERSES_PER_TMS_PART)] : null;
+        const selection = part ? `${group} ${part}` : pack;
+        if (!selected.has(group) && !selected.has(selection)) continue;
 
-        const text = (answerSource === "title" ? verse.title : verse.text) || "";
+        const hasDepHeading = splitDepTitles && Boolean(verse.heading?.trim());
+        const useHeading = hasDepHeading && depTitleSource === "heading";
+        const field = useHeading ? "heading" : titleMode ? "title" : "text";
+        const answerKind = hasDepHeading && !useHeading ? "subtitle" : titleMode ? "title" : "text";
+        const text = verse[field] || "";
         const prefix = letters(text).slice(0, KOREAN_ANSWER_LENGTH);
         if (prefix.length < KOREAN_ANSWER_LENGTH) continue;
         const answer = prefix.join("");
@@ -80,16 +90,17 @@
         const answers = promptsByPack.get(key);
         if (answers.has(answer)) continue;
         answers.add(answer);
-        cards.push({ id, pack, ref: reference, text, answer, heading: verse.heading });
+        const relatedTitle = useHeading ? verse.title : verse.heading;
+        cards.push({ id, pack, ref: reference, text, answer, answerKind, relatedTitle });
       }
     }
-    return cards.map(({ pack, ref, heading, ...card }) => {
+    return cards.map(({ pack, ref, relatedTitle, ...card }) => {
       const repeatedInPack = promptsByPack.get(`${pack}|${ref}`).size > 1;
       const labeled = repeatedInPack || packsByReference.get(ref).size > 1;
       return {
         ...card,
         ref: labeled ? `${pack} - ${ref}` : ref,
-        hint: repeatedInPack && answerSource === "title" ? heading : undefined,
+        hint: repeatedInPack && answerSource === "title" ? relatedTitle : undefined,
       };
     });
   }

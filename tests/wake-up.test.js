@@ -126,3 +126,40 @@ test("title mode grades the first two characters of the title and distinguishes 
     ["말씀의 섭취 방법", "공부"],
   ]);
 });
+
+test("60구절 parts each select their 12 verses and work with individual DEP packs", () => {
+  const partStarts = { A: "고후5:17", B: "롬3:23", C: "고전3:16", D: "마6:33", E: "요13:34,35" };
+  for (const [part, firstRef] of Object.entries(partStarts)) {
+    const deck = makeKoreanDeck(packs, { groups: [`60구절 ${part}`] });
+    assert.equal(deck.length, 12);
+    assert.ok(deck[0].id.startsWith(`60구절|${firstRef}|`));
+  }
+  assert.equal(makeKoreanDeck(packs, { groups: Object.keys(partStarts).map((part) => `60구절 ${part}`) }).length, 60);
+  for (let number = 1; number <= 8; number++) {
+    const group = `DEP${number}`;
+    const deck = makeKoreanDeck(packs, { groups: ["60구절 E", group] });
+    assert.equal(deck.filter(({ id }) => id.startsWith("60구절|")).length, 12);
+    const selectedDep = new Set(deck.map(({ id }) => id.split("|")[0]).filter((id) => id.startsWith("DEP")));
+    assert.deepEqual([...selectedDep], [group]);
+  }
+});
+
+test("DEP2–7 can grade two characters of the heading or subtitle and other packs keep their title", () => {
+  const groups = ["DEP1", "DEP2", "DEP6", "DEP8"];
+  const headings = makeKoreanDeck(packs, { groups, answerSource: "title", depTitleSource: "heading" });
+  const subtitles = makeKoreanDeck(packs, { groups, answerSource: "title", depTitleSource: "subtitle" });
+  const heading = headings.find(({ id }) => id.startsWith("DEP2|고전1:9|"));
+  const subtitle = subtitles.find(({ id }) => id.startsWith("DEP2|고전1:9|"));
+  assert.deepEqual([heading.answer, heading.answerKind], ["왜q", "title"]);
+  assert.deepEqual([subtitle.answer, subtitle.answerKind], ["하나", "subtitle"]);
+  assert.equal(attack(startRound([heading], 0), 500, 0, "왜 Q").hits, 1);
+  assert.equal(attack(startRound([heading], 0), 500, 0, "하나").feedback, "miss");
+  assert.equal(attack(startRound([subtitle], 0), 500, 0, "하나").hits, 1);
+  assert.deepEqual(headings.filter(({ ref }) => ref === "DEP6 - 롬10:9,10").map(({ hint }) => hint), [
+    "영접하도록 도울 것", "인간의 책임 - 영접 기도",
+  ]);
+  for (const group of ["DEP1", "DEP8"]) {
+    assert.deepEqual(headings.filter(({ id }) => id.startsWith(group)), subtitles.filter(({ id }) => id.startsWith(group)));
+    assert.equal(headings.find(({ id }) => id.startsWith(group)).answerKind, "title");
+  }
+});
