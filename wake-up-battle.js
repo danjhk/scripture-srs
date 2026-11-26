@@ -16,8 +16,9 @@
       answerLanguage: "ko",
       time: "남은 시간", base: "기지", hits: "명중", bossHealth: "보스 체력",
       waves: ["1차 공세", "2차 공세", "보스"],
-      instruction: "구절 본문의 첫 두 음절을 입력하세요. 띄어쓰기는 무시해요.",
-      attack: "공격", units: "음절", upgrade: "강화 선택",
+      instruction: "본문의 첫 두 글자를 입력하세요. 띄어쓰기는 무시해요.",
+      titleInstruction: "제목의 첫 두 글자를 입력하세요. 띄어쓰기는 무시해요.",
+      attack: "공격", units: "글자", upgrade: "강화 선택",
       repair: "기지 체력 +2", power: "보스 공격력 +1",
       feedback: { hit: "명중!", miss: "틀렸어요. 기지 체력이 줄었어요.", timeout: "적이 기지에 도착했어요." },
       outcome: { victory: "보스를 물리쳤어요", defeat: "기지가 무너졌어요", time: "시간이 끝났어요" },
@@ -42,9 +43,14 @@
       const list = document.createElement("ul");
       for (const { card, attempts } of missed.values()) {
         const item = document.createElement("li");
-        item.innerHTML = `<strong></strong><dl><dt>${copy.typed}</dt><dd></dd><dt>${copy.correct}</dt><dd><code class="wake-up-correct"></code></dd></dl><p></p>`;
+        item.innerHTML = `<strong></strong><p class="wake-up-hint" hidden></p><dl><dt>${copy.typed}</dt><dd></dd><dt>${copy.correct}</dt><dd><code class="wake-up-correct"></code></dd></dl><p></p>`;
         item.querySelector("strong").textContent = card.ref;
-        item.querySelector("p").textContent = card.text;
+        if (card.hint) {
+          const hint = item.querySelector(".wake-up-hint");
+          hint.textContent = card.hint;
+          hint.hidden = false;
+        }
+        item.querySelector("p:last-child").textContent = card.text;
         item.querySelector(".wake-up-correct").textContent = card.answer;
         const answers = item.querySelector("dd");
         for (const typed of attempts) {
@@ -59,8 +65,9 @@
     heading.focus();
   }
 
-  function mount(host, deck, language = "en") {
+  function mount(host, deck, language = "en", answerSource = "text") {
     const copy = labels[language];
+    const instruction = answerSource === "title" && copy.titleInstruction ? copy.titleInstruction : copy.instruction;
     // Only interface strings are inserted as markup. Verse data and answers use textContent.
     host.innerHTML = `
       <section class="wake-up-panel">
@@ -77,7 +84,8 @@
         </div>
         <div class="wake-up-controls">
           <h2 data-reference lang="${copy.answerLanguage}"></h2>
-          <label for="wake-up-answer">${copy.instruction}</label>
+          <p class="wake-up-hint" hidden></p>
+          <label for="wake-up-answer">${instruction}</label>
           <div class="wake-up-entry">
             <input id="wake-up-answer" lang="${copy.answerLanguage}" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false" enterkeyhint="go" />
             <button type="button" data-attack>${copy.attack}</button>
@@ -94,6 +102,7 @@
     const time = find("[data-time]"), base = find("[data-base]"), hits = find("[data-hits]");
     const wave = find("[data-wave]"), boss = find("[data-boss]"), lane = find(".wake-up-lane");
     const reference = find("[data-reference]"), input = find("input"), attack = find("[data-attack]");
+    const hint = find(".wake-up-hint");
     const feedback = find('[role="status"]'), count = find("[data-count]");
     const upgrades = find(".wake-up-upgrades"), repair = find("[data-repair]"), power = find("[data-power]");
     let enemy = find(".wake-up-enemy");
@@ -134,7 +143,10 @@
 
       if (shownTurn !== round.turn) {
         shownTurn = round.turn;
-        setText(reference, WakeUp.currentEnemy(round).ref);
+        const card = WakeUp.currentEnemy(round);
+        setText(reference, card.ref);
+        setText(hint, card.hint || "");
+        hint.hidden = !card.hint;
         if (composingTurn !== null) {
           // A prompt can expire while an IME is composing. End that composition before resetting the field.
           input.blur();

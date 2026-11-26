@@ -5,7 +5,7 @@
 })(globalThis, function () {
   const ANSWER_LENGTH = 5;
   const KOREAN_ANSWER_LENGTH = 2;
-  const KOREAN_PACKS = new Set(["5확신", "8동행", "60구절"]);
+  const KOREAN_GROUPS = ["5확신", "8동행", "60구절", "242"];
   const ROUND_MS = 180_000;
   const BASE_HEALTH = 6;
   const BOSS_HEALTH = 6;
@@ -54,27 +54,44 @@
     return deck;
   }
 
-  function makeKoreanDeck(packs) {
+  function makeKoreanDeck(packs, { groups = KOREAN_GROUPS, answerSource = "text" } = {}) {
     const cards = [];
     const packsByReference = new Map();
-    const seen = new Set();
+    const promptsByPack = new Map();
+    const selected = new Set(groups);
     for (const { name, verses } of packs) {
-      const pack = KOREAN_PACKS.has(name) ? name : /^DEP[1-8](?=\s|[-–—]|$)/u.exec(name)?.[0];
-      if (!pack) continue;
-      for (const { ref, text } of verses) {
-        const reference = ref.trim().replace(/\s+(?=\d)/g, "");
-        const answer = letters(text).slice(0, KOREAN_ANSWER_LENGTH).join("");
-        const id = `${pack}|${reference}|${answer}`;
-        if (!/^[가-힣]{2}$/.test(answer) || seen.has(id)) continue;
-        seen.add(id);
-        cards.push({ id, pack, ref: reference, text, answer });
+      const dep = /^DEP[1-8](?=\s|[-–—]|$)/u.exec(name)?.[0];
+      const group = dep ? "242" : name;
+      if (!KOREAN_GROUPS.includes(group)) continue;
+      const pack = dep || name;
+      for (const verse of verses) {
+        const reference = verse.ref.trim().replace(/\s+(?=\d)/g, "");
         if (!packsByReference.has(reference)) packsByReference.set(reference, new Set());
         packsByReference.get(reference).add(pack);
+        if (!selected.has(group)) continue;
+
+        const text = (answerSource === "title" ? verse.title : verse.text) || "";
+        const prefix = letters(text).slice(0, KOREAN_ANSWER_LENGTH);
+        if (prefix.length < KOREAN_ANSWER_LENGTH) continue;
+        const answer = prefix.join("");
+        const id = `${pack}|${reference}|${answer}`;
+        const key = `${pack}|${reference}`;
+        if (!promptsByPack.has(key)) promptsByPack.set(key, new Set());
+        const answers = promptsByPack.get(key);
+        if (answers.has(answer)) continue;
+        answers.add(answer);
+        cards.push({ id, pack, ref: reference, text, answer, heading: verse.heading });
       }
     }
-    return cards.map(({ pack, ref, ...card }) => ({
-      ...card, ref: packsByReference.get(ref).size > 1 ? `${pack} - ${ref}` : ref,
-    }));
+    return cards.map(({ pack, ref, heading, ...card }) => {
+      const repeatedInPack = promptsByPack.get(`${pack}|${ref}`).size > 1;
+      const labeled = repeatedInPack || packsByReference.get(ref).size > 1;
+      return {
+        ...card,
+        ref: labeled ? `${pack} - ${ref}` : ref,
+        hint: repeatedInPack && answerSource === "title" ? heading : undefined,
+      };
+    });
   }
 
   function startRound(deck, at) {

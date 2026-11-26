@@ -54,6 +54,8 @@
   font-size: 0.875rem;
 }
 
+.wake-up-hint { margin: 0 0 0.5rem; color: #cbd5e1; font-size: 0.875rem; }
+
 .wake-up-entry, .wake-up-upgrades, .wake-up-feedback { display: flex; gap: 0.5rem; }
 .wake-up-entry { margin: 0.5rem 0; }
 

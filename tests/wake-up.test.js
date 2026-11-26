@@ -98,3 +98,31 @@ test("Korean attacks use two syllables from the verse body and ignore spaces", (
   assert.equal(attack(round, 1_000, 0, "또증").hits, 1);
   assert.equal(attack(round, 1_000, 0, "또 증".normalize("NFD")).hits, 1);
 });
+
+test("Korean rounds use only selected packs and keep duplicate-reference labels", () => {
+  const combined = makeKoreanDeck(packs, { groups: ["5확신", "60구절"] });
+  assert.equal(combined.length, 65);
+  assert.ok(combined.every(({ id }) => /^(?:5확신|60구절)\|/.test(id)));
+  assert.ok(combined.some(({ ref }) => ref === "60구절 - 딛3:5"));
+  const depOnly = makeKoreanDeck(packs, { groups: ["242"] });
+  assert.ok(depOnly.every(({ id }) => /^DEP[1-8]\|/.test(id)));
+  assert.equal(new Set(depOnly.map(({ id }) => id.split("|")[0])).size, 8);
+  assert.deepEqual(makeKoreanDeck(packs, { groups: [] }), []);
+});
+
+test("title mode grades the first two characters of the title and distinguishes repeated DEP titles", () => {
+  const titles = makeKoreanDeck(packs, { groups: ["5확신", "242"], answerSource: "title" });
+  const john = titles.find(({ ref }) => ref === "5확신 - 요일5:11,12");
+  assert.equal(john.text, "구원의 확신");
+  assert.equal(john.answer, "구원");
+  assert.equal(john.hint, undefined);
+  const round = startRound([john], 0);
+  assert.equal(attack(round, 1_000, 0, "구 원").hits, 1);
+  assert.equal(attack(round, 1_000, 0, "또증").feedback, "miss");
+
+  const acts = titles.filter(({ ref }) => ref === "DEP3 - 행17:11");
+  assert.deepEqual(acts.map(({ hint, answer }) => [hint, answer]), [
+    ["말씀에 대한 태도", "날마"],
+    ["말씀의 섭취 방법", "공부"],
+  ]);
+});
