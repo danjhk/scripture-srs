@@ -9,13 +9,13 @@
 <style>
   :root {
     --bg: #f8fafc; --card: #fff; --text: #0f172a; --muted: #475569;
-    --border: #cbd5e1; --accent: #0f766e; --selected: #ecfdf5;
+    --border: #cbd5e1; --accent: #0f766e; --selected: #ecfdf5; --wrong: #be123c;
   }
   @media (prefers-color-scheme: dark) {
     :root {
       color-scheme: dark;
       --bg: #020617; --card: #0f172a; --text: #f1f5f9; --muted: #cbd5e1;
-      --border: #475569; --accent: #5eead4; --selected: #134e4a;
+      --border: #475569; --accent: #5eead4; --selected: #134e4a; --wrong: #fda4af;
     }
   }
   * { box-sizing: border-box; }
@@ -31,6 +31,13 @@
   header { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 16px; }
   h1 { margin: 0; font-size: 22px; line-height: 1.25; }
   .game-setup { padding: 16px; border: 1px solid var(--border); border-radius: 16px; background: var(--card); }
+  .game-guide { margin-bottom: 16px; padding-bottom: 12px; border-bottom: 1px solid var(--border); }
+  .game-guide h2 { margin: 0; font-size: 16px; }
+  .game-guide p { margin: 4px 0 0; font-size: 14px; }
+  .guide-examples { display: flex; flex-wrap: wrap; gap: 2px 10px; }
+  .guide-examples span { white-space: nowrap; }
+  .guide-examples code { color: var(--accent); font: inherit; font-weight: 700; }
+  .guide-wrong code { color: var(--wrong); }
   fieldset { min-width: 0; margin: 0 0 16px; padding: 0; border: 0; }
   legend { margin-bottom: 8px; padding: 0; font-weight: 700; }
   .choices { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
@@ -77,6 +84,22 @@
   </header>
 
   <form id="gameSetup" class="game-setup">
+    <section class="game-guide" aria-labelledby="guideTitle">
+      <h2 id="guideTitle">게임 방법</h2>
+      <p>첫 두 글자를 입력한 뒤 <strong>공격</strong>을 누르세요. 띄어쓰기는 무시해요.</p>
+      <p class="guide-examples">
+        <strong>5확신 본문 정답</strong>
+        <span>요일5:11-12 → <code>또증</code></span>
+        <span>요16:24 → <code>지금</code></span>
+      </p>
+      <p class="guide-examples guide-wrong">
+        <strong>오답 예시</strong>
+        <span><code>또증거</code> (3글자)</span>
+        <span><code>또</code> (1글자)</span>
+        <span><code>지굼</code> (오타)</span>
+      </p>
+    </section>
+
     <fieldset>
       <legend>암송할 팩</legend>
       <div class="choices">
